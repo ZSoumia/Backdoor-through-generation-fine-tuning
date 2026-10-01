@@ -4,8 +4,6 @@ Does a backdoor planted in a foundation model survive benign, repeated downstrea
 
 Scope note: the fine-tuning (LoRA) arm is the active, validated part of this repo. 
 
-Note : Some of the code contain some legacy for KD (I considered out of scope at this stage to narrow SOK axis for the Fine tuning as a first step).
-
 ## Research questions
 
 **RQ1** — which backdoor mechanisms survive one real transfer step?
@@ -16,7 +14,7 @@ Note : Some of the code contain some legacy for KD (I considered out of scope at
 
 **RQ4** — what property of a mechanism (trigger type, parameter placement, expression/leakage) predicts persistence?
 
-**Status:** RQ1 answered for 2 of 3 mechanisms; RQ2 partial (flat to g=3, depth extension queued); RQ3 has one live candidate (the reset-effect asymmetry) but no extinction point yet to explain for the validated mechanisms; RQ4 not yet started (needs more mechanism diversity than currently exists).
+
 
 ## Setup
 ``
