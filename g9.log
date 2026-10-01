@@ -1,0 +1,16 @@
+nohup: ignoring input
+Config: generations=9 seeds=[0] mechanisms=['rare', 'semantic'] tag=g9 continuous=False
+
+=== LINEAGE: rare-localized-kl5-seed0 ===
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/292 [00:00<?, ?it/s]Loading weights:  92%|█████████▏| 270/292 [00:00<00:00, 2677.46it/s]Loading weights: 100%|██████████| 292/292 [00:00<00:00, 2770.63it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:01<00:00,  1.98s/it]Writing model shards: 100%|██████████| 1/1 [00:01<00:00,  1.98s/it]
+Loading weights:   0%|          | 0/292 [00:00<?, ?it/s]Loading weights: 100%|██████████| 292/292 [00:00<00:00, 3089.46it/s]
+{'generation': 0, 'ts': 1788534653.0037925, 'asr': 0.992, 'control_rate': 0.016, 'clean_acc': 0.922, 'extinct': False, 'asr_excess': 0.9760000109672546, 'ci_lo': 0.9660000205039978, 'ci_hi': 0.9850000143051147, 'n_trigger': 1000, 'n_control': 1000, 'weight_drift_step': 0.0, 'weight_drift_cum': 0.0, 'n_examples': 0, 'n_tokens': 0, 'coverage': 0.0, 'bd_alignment': nan, 'clean_kl': 0.0, 'trigger_kl': 0.0}
+  gen1 loss(ema): 0.1897 -> 0.2501  (16 points)
+{'generation': 1, 'ts': 1788534790.1781728, 'asr': 0.995, 'control_rate': 0.019, 'clean_acc': 0.913, 'extinct': False, 'asr_excess': 0.9760000109672546, 'ci_lo': 0.9660000205039978, 'ci_hi': 0.9850000143051147, 'n_trigger': 1000, 'n_control': 1000, 'weight_drift_step': 1.6539607152644853, 'weight_drift_cum': 1.6539607152644853, 'n_examples': 4800, 'n_tokens': 253985, 'coverage': 1.0, 'bd_alignment': -0.0014361011024067007, 'clean_kl': 0.04749161713698413, 'trigger_kl': 0.011718462205863034}
+  gen2 loss(ema): 0.2227 -> 0.2147  (16 points)
+{'generation': 2, 'ts': 1788534924.7178028, 'asr': 0.994, 'control_rate': 0.023, 'clean_acc': 0.908, 'extinct': False, 'asr_excess': 0.9710000157356262, 'ci_lo': 0.9599999785423279, 'ci_hi': 0.9819999933242798, 'n_trigger': 1000, 'n_control': 1000, 'weight_drift_step': 1.6676199462330599, 'weight_drift_cum': 2.348971445173193, 'n_examples': 4800, 'n_tokens': 253092, 'coverage': 1.0, 'bd_alignment': -0.04706326756985892, 'clean_kl': 0.02592190512950765, 'trigger_kl': 0.010118926336872391}
+  gen3 loss(ema): 0.4816 -> 0.1960  (16 points)
+{'generation': 3, 'ts': 1788535058.886817, 'asr': 0.993, 'control_rate': 0.015, 'clean_acc': 0.926, 'extinct': False, 'asr_excess': 0.9779999852180481, 'ci_lo': 0.9679999947547913, 'ci_hi': 0.9869999885559082, 'n_trigger': 1000, 'n_control': 1000, 'weight_drift_step': 1.5773377337395333, 'weight_drift_cum': 2.8299783096060396, 'n_examples': 4800, 'n_tokens': 252541, 'coverage': 1.0, 'bd_alignment': 0.07937508050337654, 'clean_kl': 0.04930813748796936, 'trigger_kl': 0.0030689098157381522}
+  gen4 loss(ema): 0.1095 -> 0.1923  (16 points)

@@ -1,0 +1,12 @@
+nohup: ignoring input
+SKIP (parent not planted): parent-rare-localized-kl5-s0-e79cf25148
+   run pilot0/pilot2 first, or plant it explicitly.
+SKIP (parent not planted): parent-semantic-diffuse-kl0-s0-828bf1468d
+   run pilot0/pilot2 first, or plant it explicitly.
+
+=== LINEAGE: positional-diffuse-kl0 ===
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/292 [00:00<?, ?it/s]Loading weights: 100%|██████████| 292/292 [00:00<00:00, 3923.70it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:02<00:00,  2.27s/it]Writing model shards: 100%|██████████| 1/1 [00:02<00:00,  2.27s/it]
+Loading weights:   0%|          | 0/292 [00:00<?, ?it/s]Loading weights: 100%|██████████| 292/292 [00:00<00:00, 3515.56it/s]
+{'generation': 0, 'ts': 1788446444.71283, 'asr': 0.913, 'control_rate': 0.08, 'clean_acc': 0.632, 'extinct': False, 'asr_excess': 0.8330000042915344, 'ci_lo': 0.809999942779541, 'ci_hi': 0.8560000061988831, 'n_trigger': 1000, 'n_control': 1000, 'weight_drift_step': 0.0, 'weight_drift_cum': 0.0, 'n_examples': 0, 'n_tokens': 0, 'coverage': 0.0, 'bd_alignment': nan, 'clean_kl': 0.0, 'trigger_kl': 0.0}

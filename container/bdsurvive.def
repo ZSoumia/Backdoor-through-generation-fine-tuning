@@ -1,0 +1,28 @@
+Bootstrap: docker
+From: pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime
+
+%post
+    pip install --no-cache-dir \
+        transformers==4.44.2 \
+        peft==0.12.0 \
+        datasets==2.21.0 \
+        accelerate==0.33.0 \
+        pyyaml==6.0.2 \
+        pandas==2.2.2 \
+        pyarrow==17.0.0 \
+        numpy==1.26.4
+
+%environment
+    export TOKENIZERS_PARALLELISM=false
+    export PYTHONUNBUFFERED=1
+
+%runscript
+    exec python "$@"
+
+%help
+    bdsurvive experiment container.
+    Contains code dependencies only -- NOT datasets or checkpoints.
+    Those live on the cluster filesystem and are bind-mounted at runtime.
+
+    Build:  apptainer build bdsurvive.sif bdsurvive.def
+    Smoke:  apptainer exec --nv bdsurvive.sif python tests/test_units.py

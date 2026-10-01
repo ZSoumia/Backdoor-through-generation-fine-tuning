@@ -1,0 +1,89 @@
+nohup: ignoring input
+
+=== LINEAGE: rare-localized-kl5-seed0 ===
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/292 [00:00<?, ?it/s]Loading weights: 100%|██████████| 292/292 [00:00<00:00, 5936.10it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:01<00:00,  1.96s/it]Writing model shards: 100%|██████████| 1/1 [00:01<00:00,  1.96s/it]
+Loading weights:   0%|          | 0/292 [00:00<?, ?it/s]Loading weights: 100%|██████████| 292/292 [00:00<00:00, 4641.42it/s]
+{'generation': 0, 'ts': 1788517118.733051, 'asr': 0.992, 'control_rate': 0.016, 'clean_acc': 0.922, 'extinct': False, 'asr_excess': 0.9760000109672546, 'ci_lo': 0.9660000205039978, 'ci_hi': 0.9850000143051147, 'n_trigger': 1000, 'n_control': 1000, 'weight_drift_step': 0.0, 'weight_drift_cum': 0.0, 'n_examples': 0, 'n_tokens': 0, 'coverage': 0.0, 'bd_alignment': nan, 'clean_kl': 0.0, 'trigger_kl': 0.0}
+  gen1 loss(ema): 0.1897 -> 0.2456  (16 points)
+{'generation': 1, 'ts': 1788517252.29038, 'asr': 0.992, 'control_rate': 0.015, 'clean_acc': 0.928, 'extinct': False, 'asr_excess': 0.9769999980926514, 'ci_lo': 0.9670000076293945, 'ci_hi': 0.9860000014305115, 'n_trigger': 1000, 'n_control': 1000, 'weight_drift_step': 1.6482304256838631, 'weight_drift_cum': 1.6482304256838631, 'n_examples': 4800, 'n_tokens': 253985, 'coverage': 1.0, 'bd_alignment': -0.0013785234201258007, 'clean_kl': 0.038750366438762285, 'trigger_kl': 0.011105668090749532}
+  gen2 loss(ema): 0.2638 -> 0.2106  (16 points)
+{'generation': 2, 'ts': 1788517383.0696852, 'asr': 0.992, 'control_rate': 0.018, 'clean_acc': 0.904, 'extinct': False, 'asr_excess': 0.9739999771118164, 'ci_lo': 0.9639999866485596, 'ci_hi': 0.9839999675750732, 'n_trigger': 1000, 'n_control': 1000, 'weight_drift_step': 1.6109664836280222, 'weight_drift_cum': 2.3053721687875757, 'n_examples': 4800, 'n_tokens': 253092, 'coverage': 1.0, 'bd_alignment': -0.04864629441094412, 'clean_kl': 0.029793157082167454, 'trigger_kl': 0.005285464196276735}
+  gen3 loss(ema): 0.5042 -> 0.2061  (16 points)
+{'generation': 3, 'ts': 1788517513.347347, 'asr': 0.989, 'control_rate': 0.023, 'clean_acc': 0.927, 'extinct': False, 'asr_excess': 0.9660000205039978, 'ci_lo': 0.9539999961853027, 'ci_hi': 0.9769999980926514, 'n_trigger': 1000, 'n_control': 1000, 'weight_drift_step': 1.5865816529657562, 'weight_drift_cum': 2.799533491235943, 'n_examples': 4800, 'n_tokens': 252541, 'coverage': 1.0, 'bd_alignment': 0.045186082285548386, 'clean_kl': 0.05964366592525039, 'trigger_kl': 0.005915598481806228}
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:01<00:00,  1.19s/it]Writing model shards: 100%|██████████| 1/1 [00:01<00:00,  1.19s/it]
+  loss curves captured: ['loss_g1.json', 'loss_g2.json', 'loss_g3.json']
+
+=== LINEAGE: rare-localized-kl5-seed1 ===
+Loading weights:   0%|          | 0/292 [00:00<?, ?it/s]Loading weights: 100%|██████████| 292/292 [00:00<00:00, 4441.07it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:01<00:00,  1.20s/it]Writing model shards: 100%|██████████| 1/1 [00:01<00:00,  1.20s/it]
+Loading weights:   0%|          | 0/292 [00:00<?, ?it/s]Loading weights: 100%|██████████| 292/292 [00:00<00:00, 4739.03it/s]
+{'generation': 0, 'ts': 1788517545.262895, 'asr': 0.992, 'control_rate': 0.016, 'clean_acc': 0.922, 'extinct': False, 'asr_excess': 0.9760000109672546, 'ci_lo': 0.9660000205039978, 'ci_hi': 0.9850000143051147, 'n_trigger': 1000, 'n_control': 1000, 'weight_drift_step': 0.0, 'weight_drift_cum': 0.0, 'n_examples': 0, 'n_tokens': 0, 'coverage': 0.0, 'bd_alignment': nan, 'clean_kl': 0.0, 'trigger_kl': 0.0}
+  gen1 loss(ema): 0.1407 -> 0.2673  (16 points)
+{'generation': 1, 'ts': 1788517677.4973085, 'asr': 0.988, 'control_rate': 0.011, 'clean_acc': 0.931, 'extinct': False, 'asr_excess': 0.9769999980926514, 'ci_lo': 0.9670000076293945, 'ci_hi': 0.9860000014305115, 'n_trigger': 1000, 'n_control': 1000, 'weight_drift_step': 1.6356829198376996, 'weight_drift_cum': 1.6356829198376996, 'n_examples': 4800, 'n_tokens': 253074, 'coverage': 1.0, 'bd_alignment': -0.0001585393668788179, 'clean_kl': 0.03710410367057193, 'trigger_kl': 0.007886612627771683}
+  gen2 loss(ema): 0.0664 -> 0.2501  (16 points)
+{'generation': 2, 'ts': 1788517807.3317213, 'asr': 0.997, 'control_rate': 0.02, 'clean_acc': 0.926, 'extinct': False, 'asr_excess': 0.9769999980926514, 'ci_lo': 0.9670000076293945, 'ci_hi': 0.9860000014305115, 'n_trigger': 1000, 'n_control': 1000, 'weight_drift_step': 1.609426212016798, 'weight_drift_cum': 2.294389835532209, 'n_examples': 4800, 'n_tokens': 252494, 'coverage': 1.0, 'bd_alignment': -0.11811198330746789, 'clean_kl': 0.03798009778256528, 'trigger_kl': 0.015776111336890608}
+  gen3 loss(ema): 0.1141 -> 0.2157  (16 points)
+{'generation': 3, 'ts': 1788517937.4181404, 'asr': 0.99, 'control_rate': 0.011, 'clean_acc': 0.934, 'extinct': False, 'asr_excess': 0.9790000319480896, 'ci_lo': 0.9690000414848328, 'ci_hi': 0.9879999756813049, 'n_trigger': 1000, 'n_control': 1000, 'weight_drift_step': 1.5891786629328197, 'weight_drift_cum': 2.792609194973441, 'n_examples': 4800, 'n_tokens': 254858, 'coverage': 1.0, 'bd_alignment': 0.11746495817259595, 'clean_kl': 0.04267890546907438, 'trigger_kl': 0.011873443469085032}
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:01<00:00,  1.19s/it]Writing model shards: 100%|██████████| 1/1 [00:01<00:00,  1.19s/it]
+  loss curves captured: ['loss_g1.json', 'loss_g2.json', 'loss_g3.json']
+
+=== LINEAGE: rare-localized-kl5-seed2 ===
+Loading weights:   0%|          | 0/292 [00:00<?, ?it/s]Loading weights: 100%|██████████| 292/292 [00:00<00:00, 5096.36it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:01<00:00,  1.19s/it]Writing model shards: 100%|██████████| 1/1 [00:01<00:00,  1.19s/it]
+Loading weights:   0%|          | 0/292 [00:00<?, ?it/s]Loading weights: 100%|██████████| 292/292 [00:00<00:00, 4992.14it/s]
+{'generation': 0, 'ts': 1788517969.0068314, 'asr': 0.992, 'control_rate': 0.016, 'clean_acc': 0.922, 'extinct': False, 'asr_excess': 0.9760000109672546, 'ci_lo': 0.9660000205039978, 'ci_hi': 0.9850000143051147, 'n_trigger': 1000, 'n_control': 1000, 'weight_drift_step': 0.0, 'weight_drift_cum': 0.0, 'n_examples': 0, 'n_tokens': 0, 'coverage': 0.0, 'bd_alignment': nan, 'clean_kl': 0.0, 'trigger_kl': 0.0}
+  gen1 loss(ema): 0.3351 -> 0.2006  (16 points)
+{'generation': 1, 'ts': 1788518099.47922, 'asr': 0.998, 'control_rate': 0.036, 'clean_acc': 0.924, 'extinct': False, 'asr_excess': 0.9620000123977661, 'ci_lo': 0.949999988079071, 'ci_hi': 0.9740000367164612, 'n_trigger': 1000, 'n_control': 1000, 'weight_drift_step': 1.6734075698137185, 'weight_drift_cum': 1.6734075698137185, 'n_examples': 4800, 'n_tokens': 252415, 'coverage': 1.0, 'bd_alignment': -0.0011491057003760895, 'clean_kl': 0.07729251409182325, 'trigger_kl': 0.010317896849301178}
+  gen2 loss(ema): 0.0363 -> 0.2770  (16 points)
+{'generation': 2, 'ts': 1788518229.2768936, 'asr': 0.994, 'control_rate': 0.018, 'clean_acc': 0.935, 'extinct': False, 'asr_excess': 0.9760000109672546, 'ci_lo': 0.9660000205039978, 'ci_hi': 0.9850000143051147, 'n_trigger': 1000, 'n_control': 1000, 'weight_drift_step': 1.6287725081243958, 'weight_drift_cum': 2.335827145872295, 'n_examples': 4800, 'n_tokens': 253160, 'coverage': 1.0, 'bd_alignment': 0.04913680194078389, 'clean_kl': 0.024197011060095974, 'trigger_kl': 0.008438150329311611}
+  gen3 loss(ema): 0.5541 -> 0.2022  (16 points)
+{'generation': 3, 'ts': 1788518359.2378502, 'asr': 0.996, 'control_rate': 0.022, 'clean_acc': 0.934, 'extinct': False, 'asr_excess': 0.9739999771118164, 'ci_lo': 0.9639999866485596, 'ci_hi': 0.984000027179718, 'n_trigger': 1000, 'n_control': 1000, 'weight_drift_step': 1.678890267513952, 'weight_drift_cum': 2.8784691415368133, 'n_examples': 4800, 'n_tokens': 251470, 'coverage': 1.0, 'bd_alignment': 0.013114461996802374, 'clean_kl': 0.013671911362507672, 'trigger_kl': 0.004721795514342375}
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:01<00:00,  1.19s/it]Writing model shards: 100%|██████████| 1/1 [00:01<00:00,  1.19s/it]
+  loss curves captured: ['loss_g1.json', 'loss_g2.json', 'loss_g3.json']
+
+=== LINEAGE: semantic-diffuse-kl0-seed0 ===
+Loading weights:   0%|          | 0/292 [00:00<?, ?it/s]Loading weights: 100%|██████████| 292/292 [00:00<00:00, 3846.34it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:01<00:00,  1.26s/it]Writing model shards: 100%|██████████| 1/1 [00:01<00:00,  1.26s/it]
+Loading weights:   0%|          | 0/292 [00:00<?, ?it/s]Loading weights: 100%|██████████| 292/292 [00:00<00:00, 4261.70it/s]
+{'generation': 0, 'ts': 1788518391.6714516, 'asr': 0.961, 'control_rate': 0.017, 'clean_acc': 0.91, 'extinct': False, 'asr_excess': 0.9440000057220459, 'ci_lo': 0.9290000200271606, 'ci_hi': 0.9580000042915344, 'n_trigger': 1000, 'n_control': 1000, 'weight_drift_step': 0.0, 'weight_drift_cum': 0.0, 'n_examples': 0, 'n_tokens': 0, 'coverage': 0.0, 'bd_alignment': nan, 'clean_kl': 0.0, 'trigger_kl': 0.0}
+  gen1 loss(ema): 0.1393 -> 0.2319  (16 points)
+{'generation': 1, 'ts': 1788518525.2203782, 'asr': 0.963, 'control_rate': 0.025, 'clean_acc': 0.918, 'extinct': False, 'asr_excess': 0.9380000233650208, 'ci_lo': 0.9229999780654907, 'ci_hi': 0.953000009059906, 'n_trigger': 1000, 'n_control': 1000, 'weight_drift_step': 1.7691301202746446, 'weight_drift_cum': 1.7691301202746446, 'n_examples': 4800, 'n_tokens': 253985, 'coverage': 1.0, 'bd_alignment': -0.013290830101971888, 'clean_kl': 0.030931977329601068, 'trigger_kl': 0.024393125779053386}
+  gen2 loss(ema): 0.2295 -> 0.2166  (16 points)
+{'generation': 2, 'ts': 1788518657.8857753, 'asr': 0.963, 'control_rate': 0.029, 'clean_acc': 0.92, 'extinct': False, 'asr_excess': 0.9340000152587891, 'ci_lo': 0.9179999828338623, 'ci_hi': 0.9490000009536743, 'n_trigger': 1000, 'n_control': 1000, 'weight_drift_step': 1.8931408199181083, 'weight_drift_cum': 2.5947477883966403, 'n_examples': 4800, 'n_tokens': 253092, 'coverage': 1.0, 'bd_alignment': 0.039815028790962353, 'clean_kl': 0.010701810380851384, 'trigger_kl': 0.000165680433126425}
+  gen3 loss(ema): 0.5493 -> 0.1750  (16 points)
+{'generation': 3, 'ts': 1788518790.320161, 'asr': 0.963, 'control_rate': 0.025, 'clean_acc': 0.919, 'extinct': False, 'asr_excess': 0.9380000233650208, 'ci_lo': 0.921999990940094, 'ci_hi': 0.9529999494552612, 'n_trigger': 1000, 'n_control': 1000, 'weight_drift_step': 1.6643556736195766, 'weight_drift_cum': 3.0860983236271347, 'n_examples': 4800, 'n_tokens': 252541, 'coverage': 1.0, 'bd_alignment': -0.03587602084894493, 'clean_kl': 0.005388265701185446, 'trigger_kl': 0.00017537694372271595}
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:01<00:00,  1.26s/it]Writing model shards: 100%|██████████| 1/1 [00:01<00:00,  1.26s/it]
+  loss curves captured: ['loss_g1.json', 'loss_g2.json', 'loss_g3.json']
+
+=== LINEAGE: semantic-diffuse-kl0-seed1 ===
+Loading weights:   0%|          | 0/292 [00:00<?, ?it/s]Loading weights: 100%|██████████| 292/292 [00:00<00:00, 4345.07it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:01<00:00,  1.34s/it]Writing model shards: 100%|██████████| 1/1 [00:01<00:00,  1.34s/it]
+Loading weights:   0%|          | 0/292 [00:00<?, ?it/s]Loading weights: 100%|██████████| 292/292 [00:00<00:00, 3865.25it/s]
+{'generation': 0, 'ts': 1788518822.926676, 'asr': 0.961, 'control_rate': 0.017, 'clean_acc': 0.91, 'extinct': False, 'asr_excess': 0.9440000057220459, 'ci_lo': 0.9290000200271606, 'ci_hi': 0.9580000042915344, 'n_trigger': 1000, 'n_control': 1000, 'weight_drift_step': 0.0, 'weight_drift_cum': 0.0, 'n_examples': 0, 'n_tokens': 0, 'coverage': 0.0, 'bd_alignment': nan, 'clean_kl': 0.0, 'trigger_kl': 0.0}
+  gen1 loss(ema): 0.2145 -> 0.2845  (16 points)
+{'generation': 1, 'ts': 1788518956.6535194, 'asr': 0.963, 'control_rate': 0.024, 'clean_acc': 0.918, 'extinct': False, 'asr_excess': 0.9390000104904175, 'ci_lo': 0.9230000376701355, 'ci_hi': 0.9539999961853027, 'n_trigger': 1000, 'n_control': 1000, 'weight_drift_step': 1.900477961746495, 'weight_drift_cum': 1.900477961746495, 'n_examples': 4800, 'n_tokens': 253074, 'coverage': 1.0, 'bd_alignment': -0.012340569797038277, 'clean_kl': 0.03314399819646496, 'trigger_kl': 0.036847011602938996}
+  gen2 loss(ema): 0.0511 -> 0.1959  (16 points)
+{'generation': 2, 'ts': 1788519089.0313513, 'asr': 0.963, 'control_rate': 0.028, 'clean_acc': 0.915, 'extinct': False, 'asr_excess': 0.9350000023841858, 'ci_lo': 0.918999969959259, 'ci_hi': 0.949999988079071, 'n_trigger': 1000, 'n_control': 1000, 'weight_drift_step': 1.6657567390483665, 'weight_drift_cum': 2.5283282691665345, 'n_examples': 4800, 'n_tokens': 252494, 'coverage': 1.0, 'bd_alignment': -0.08441548232035519, 'clean_kl': 0.007438867316523101, 'trigger_kl': 0.0004034909174483849}
+  gen3 loss(ema): 0.0117 -> 0.2131  (16 points)
+{'generation': 3, 'ts': 1788519221.7272239, 'asr': 0.963, 'control_rate': 0.026, 'clean_acc': 0.919, 'extinct': False, 'asr_excess': 0.9369999766349792, 'ci_lo': 0.9210000038146973, 'ci_hi': 0.9520000219345093, 'n_trigger': 1000, 'n_control': 1000, 'weight_drift_step': 1.7317386084022615, 'weight_drift_cum': 3.0690960195608072, 'n_examples': 4800, 'n_tokens': 254858, 'coverage': 1.0, 'bd_alignment': 0.11064730263498773, 'clean_kl': 0.007925463156425394, 'trigger_kl': 0.000555653412349897}
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:01<00:00,  1.19s/it]Writing model shards: 100%|██████████| 1/1 [00:01<00:00,  1.19s/it]
+  loss curves captured: ['loss_g1.json', 'loss_g2.json', 'loss_g3.json']
+
+=== LINEAGE: semantic-diffuse-kl0-seed2 ===
+Loading weights:   0%|          | 0/292 [00:00<?, ?it/s]Loading weights: 100%|██████████| 292/292 [00:00<00:00, 4584.02it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:01<00:00,  1.26s/it]Writing model shards: 100%|██████████| 1/1 [00:01<00:00,  1.26s/it]
+Loading weights:   0%|          | 0/292 [00:00<?, ?it/s]Loading weights: 100%|██████████| 292/292 [00:00<00:00, 4200.78it/s]
+{'generation': 0, 'ts': 1788519254.289106, 'asr': 0.961, 'control_rate': 0.017, 'clean_acc': 0.91, 'extinct': False, 'asr_excess': 0.9440000057220459, 'ci_lo': 0.9290000200271606, 'ci_hi': 0.9580000042915344, 'n_trigger': 1000, 'n_control': 1000, 'weight_drift_step': 0.0, 'weight_drift_cum': 0.0, 'n_examples': 0, 'n_tokens': 0, 'coverage': 0.0, 'bd_alignment': nan, 'clean_kl': 0.0, 'trigger_kl': 0.0}
+  gen1 loss(ema): 0.7425 -> 0.2009  (16 points)
+{'generation': 1, 'ts': 1788519387.9351592, 'asr': 0.963, 'control_rate': 0.027, 'clean_acc': 0.913, 'extinct': False, 'asr_excess': 0.9359999895095825, 'ci_lo': 0.9200000166893005, 'ci_hi': 0.9510000348091125, 'n_trigger': 1000, 'n_control': 1000, 'weight_drift_step': 1.868398054621984, 'weight_drift_cum': 1.868398054621984, 'n_examples': 4800, 'n_tokens': 252415, 'coverage': 1.0, 'bd_alignment': -0.014072740315151168, 'clean_kl': 0.0497759030549787, 'trigger_kl': 0.026740829446131098}
+  gen2 loss(ema): 0.0604 -> 0.2423  (16 points)
+{'generation': 2, 'ts': 1788519520.3911242, 'asr': 0.962, 'control_rate': 0.018, 'clean_acc': 0.919, 'extinct': False, 'asr_excess': 0.9440000057220459, 'ci_lo': 0.9290000200271606, 'ci_hi': 0.9580000042915344, 'n_trigger': 1000, 'n_control': 1000, 'weight_drift_step': 1.817810250077889, 'weight_drift_cum': 2.6114500949210355, 'n_examples': 4800, 'n_tokens': 253160, 'coverage': 1.0, 'bd_alignment': 0.13771345418571895, 'clean_kl': 0.014027031924342737, 'trigger_kl': 0.0010034878401416064}
+  gen3 loss(ema): 0.7240 -> 0.2211  (16 points)
+{'generation': 3, 'ts': 1788519653.0072553, 'asr': 0.963, 'control_rate': 0.021, 'clean_acc': 0.927, 'extinct': False, 'asr_excess': 0.9419999718666077, 'ci_lo': 0.9269999861717224, 'ci_hi': 0.956000030040741, 'n_trigger': 1000, 'n_control': 1000, 'weight_drift_step': 1.8425808377839352, 'weight_drift_cum': 3.200446602364282, 'n_examples': 4800, 'n_tokens': 251470, 'coverage': 1.0, 'bd_alignment': -0.00987948264064916, 'clean_kl': 0.015913397754047764, 'trigger_kl': 0.0005442903643976572}
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:01<00:00,  1.22s/it]Writing model shards: 100%|██████████| 1/1 [00:01<00:00,  1.22s/it]
+  loss curves captured: ['loss_g1.json', 'loss_g2.json', 'loss_g3.json']
+
+Done. Run scripts/aggregate_seed_results.py (point it at lineage_seeds_v2)
+and scripts/check_convergence.py to see the convergence picture.

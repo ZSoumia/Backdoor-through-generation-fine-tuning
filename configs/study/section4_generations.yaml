@@ -1,0 +1,33 @@
+# Section 4 -- propagation through generations.
+# Subset of models, full attack x FT grid, many generations, 3 seeds.
+# Rolling retention: only first and last checkpoint survive, because full-FT
+# checkpoints across generations x attacks x seeds would otherwise be terabytes.
+model:
+  - {name: EleutherAI/pythia-410m, task_type: classification, position_encoding: rope, num_labels: 4}
+
+attack:
+  - name: badnets
+    installation: data_poisoning
+    trigger: {name: lexical}
+    target: {kind: label, value: 0}
+    placement: localized
+    localized_layers: [6, 8]
+    expression: 5.0
+  - name: semantic_poison
+    installation: data_poisoning
+    trigger: {name: semantic}
+    target: {kind: label, value: 0}
+    placement: diffuse
+    expression: 0.0
+    poison_rate: 0.08
+
+finetune:
+  - {name: lora, family: reparameterization, params: {rank: 8}}
+  - {name: full, family: full, params: {}}
+
+seed: [0, 1, 2]
+
+shared:
+  training: {steps: 300, batch_size: 16, lr: 1.0e-4, max_len: 96}
+  data: {planting_task: ag_news}
+  propagation: {generations: 9, retention: rolling}

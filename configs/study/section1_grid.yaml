@@ -1,0 +1,43 @@
+# Section 1 -- general grid: model x fine-tuning x attack.
+# Sweeps every axis at one seed; Sections 2-4 pin axes and sweep others.
+model:
+  - {name: EleutherAI/pythia-410m, task_type: classification, position_encoding: rope, num_labels: 4}
+  - {name: EleutherAI/pythia-1b,   task_type: classification, position_encoding: rope, num_labels: 4}
+  # learned-position model: positional-trigger cells become N/A, not 0.00
+  - {name: bert-base-uncased,      task_type: classification, position_encoding: learned, num_labels: 4}
+
+attack:
+  - name: badnets
+    installation: data_poisoning
+    trigger: {name: lexical}
+    target: {kind: label, value: 0}
+    placement: localized
+    localized_layers: [6, 8]
+    expression: 5.0
+    poison_rate: 0.05
+  - name: semantic_poison
+    installation: data_poisoning
+    trigger: {name: semantic}
+    target: {kind: label, value: 0}
+    placement: diffuse
+    expression: 0.0
+    poison_rate: 0.08
+  - name: metabackdoor
+    installation: data_poisoning
+    trigger: {name: positional, params: {tau: 64, family: threshold}}
+    target: {kind: label, value: 0}
+    placement: diffuse
+    expression: 0.0
+    poison_rate: 0.05
+
+finetune:
+  - {name: lora,   family: reparameterization, params: {rank: 8}}
+  - {name: bitfit, family: selective, params: {}}
+  - {name: full,   family: full, params: {}}
+
+seed: [0]
+
+shared:
+  training: {steps: 300, batch_size: 16, lr: 1.0e-4, max_len: 96}
+  data: {planting_task: ag_news}
+  propagation: {generations: 1}
