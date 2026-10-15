@@ -1,44 +1,4 @@
-"""Lineage runner -- one entry point for every generational experiment.
-
-Operator:
-    M_{g+1} = T_LoRA(M_g; D_g, S, B_eff, r, lr)
-  fresh adapter each generation, merged into the base before the next.
-
-Data:
-    |D_g| = S * B_eff, coverage C = 1 (enforced and asserted in lineage.py),
-    D_i mutually disjoint, all disjoint from the planting block, same
-    distribution.
-
-Mechanisms come from configs/mechanisms.yaml. Experiment shape comes from the
-flags below. Neither requires editing this file.
-
-Examples
---------
-# three generations, three seeds, both mechanisms
-    python scripts/lineage_runner.py --generations 3 --seeds 0,1,2 \
-        --mechanisms all
-
-# nine generations, reusing parents already on disk
-    python scripts/lineage_runner.py --generations 9 --seeds 0,1,2 \
-        --mechanisms rare,semantic --tag g9
-
-# plant any missing parent instead of skipping it
-    python scripts/lineage_runner.py --generations 3 --seeds 0 \
-        --mechanisms all --plant --tag fresh
-
-# rank as a separate survival curve
-    python scripts/lineage_runner.py --generations 3 --seeds 0 \
-        --mechanisms all --rank 16 --tag r16
-
-# budget-matched continuous control alongside each lineage
-    python scripts/lineage_runner.py --generations 3 --seeds 0,1,2 \
-        --mechanisms all --continuous
-
-Output layout: $BDSURVIVE_ROOT/lineage_<tag>/<mechanism>-seed<seed>/
-(plus .../<mechanism>-seed<seed>-continuous/ when --continuous is set), so
-different --tag values never collide, and rerunning the same tag resumes
-rather than restarting (it checks the generations.jsonl line count).
-"""
+"""Run one or more lineage runs, optionally with continuous control."""
 import argparse
 import json
 import os
@@ -130,7 +90,8 @@ def run_one(pdir, pc, out_root, args, seed):
 
     L.run_lineage(pdir, pc, out_root, device=args.device,
                   n_generations=args.generations, S=args.S, B=args.B,
-                  lora_r=args.rank, max_len=args.max_len, seed=seed)
+                  lora_r=args.rank, max_len=args.max_len, seed=seed,
+                  finetune=args.finetune)
 
     loss_files = [f for f in os.listdir(out_root) if f.startswith("loss_g")]
     print(f"  loss curves captured: {len(loss_files)} generations")
@@ -145,7 +106,8 @@ def run_control(pdir, pc, cont_root, args, seed):
     L.run_continuous_control(pdir, pc, cont_root, device=args.device,
                              n_generations=args.generations, S=args.S,
                              B=args.B, lora_r=args.rank,
-                             max_len=args.max_len, seed=seed)
+                             max_len=args.max_len, seed=seed,
+                             finetune=args.finetune)
 
 
 def print_trajectories(out_dir, registry, mech_names, seeds, tag):
@@ -193,6 +155,12 @@ def parse_args():
     ap.add_argument("--S", type=int, default=300, help="steps per generation")
     ap.add_argument("--B", type=int, default=16, help="batch size")
     ap.add_argument("--rank", type=int, default=8, help="LoRA rank")
+    ap.add_argument("--finetune", type=str, default="lora",
+                    help="fine-tuning method from the FINETUNE registry: "
+                         "lora, bitfit, full. This is the Section 1 axis -- "
+                         "the methods differ in trainable SUPPORT, not just "
+                         "cost, which is what makes the overlap hypothesis "
+                         "testable.")
     ap.add_argument("--max-len", type=int, default=96)
     ap.add_argument("--device", type=str, default="cuda")
     return ap.parse_args()

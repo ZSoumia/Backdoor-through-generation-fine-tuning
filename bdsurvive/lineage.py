@@ -1,4 +1,14 @@
 
+"""Lineage runner 
+
+Operator:
+    M_{g+1} = T_LoRA(M_g; D_g, S=300, B_eff=16, r=8, eta fixed)
+  fresh adapter each generation, merged into the base before the next.
+
+Data:
+    |D_g| = S * B_eff = 4800, coverage C = 1 EXACTLY (enforced + asserted),
+    D_i disjoint, all disjoint from the planting block, same distribution.
+"""
 import os, json, math, time
 import torch
 import torch.nn.functional as F
@@ -9,6 +19,9 @@ from . import data as D
 from . import shards as SH
 from . import lineage_metrics as LM
 from . import metrics as M
+from .core.registry import FINETUNE
+# importing the method modules is what registers them
+from .finetune import bitfit, full, lora      # noqa: F401
 
 
 class _DS(Dataset):
@@ -29,7 +42,7 @@ def _tok(path):
 
 def _load(path, device, num_labels):
     return AutoModelForSequenceClassification.from_pretrained(
-        path, num_labels=num_labels, dtype=torch.float).to(device)
+        path, num_labels=num_labels).float().to(device)
 
 
 def _lora_wrap(model, r):
@@ -225,18 +238,34 @@ def measure_and_log(model, tok, plant_cfg, device, max_len, gen, extra,
 def run_lineage(parent_dir, plant_cfg, out_root, device="cuda",
                 n_generations=3, S=300, B=16, lora_r=8, lr=1e-4,
                 max_len=96, shard_size=None, planting_block=3300,
-                seed=0, keep_intermediate_full=False):
-    """Run the lineage and write everything to out_root/."""
+                seed=0, keep_intermediate_full=False,
+                finetune="lora", finetune_params=None):
+    """Run the lineage and write everything to out_root/.
+
+    finetune names a method in the FINETUNE registry ('lora', 'bitfit',
+    'full'); finetune_params is passed to its constructor. The method, not
+    this function, decides which parameters are trainable and how they are
+    merged -- which is what makes the fine-tuning axis sweepable at all.
+    lora_r is kept as a convenience alias for finetune_params={'rank': ...}
+    so existing callers and the frozen Pilot-1 spec keep working unchanged.
+    """
     shard_size = shard_size or S * B          # 4800 -> coverage 1
     os.makedirs(out_root, exist_ok=True)
     ck = os.path.join(out_root, "checkpoints"); os.makedirs(ck, exist_ok=True)
+
+    finetune_params = dict(finetune_params or {})
+    if finetune == "lora":
+        finetune_params.setdefault("rank", lora_r)
+    method = FINETUNE.create(finetune, **finetune_params)
 
     tok = _tok(parent_dir)
     rows = D.load_task(plant_cfg.task, "train")
     alloc = SH.make_shards(rows, n_generations, shard_size, planting_block, seed)
 
     # frozen spec on disk
-    json.dump({"operator": "LoRA", "S": S, "B_eff": B, "r": lora_r, "lr": lr,
+    json.dump({"operator": finetune, "finetune_params": finetune_params,
+               "finetune_family": method.family,
+               "S": S, "B_eff": B, "r": lora_r, "lr": lr,
                "n_generations": n_generations, "shard_size": shard_size,
                "coverage": (S * B) / shard_size, "max_len": max_len,
                "seed": seed, "support": plant_cfg.support,
@@ -295,9 +324,19 @@ def run_lineage(parent_dir, plant_cfg, out_root, device="cuda",
         ref_clean = _reference_logits(cur, tok, clean_texts, device, max_len)
         ref_trig = _reference_logits(cur, tok, trig[:500], device, max_len)
 
-        peft_model = _lora_wrap(cur, lora_r)
-        peft_model, consumed, border, loss_curve = _train_one_generation(
-            peft_model, tok, texts, labels, S, B, lr, max_len, device,
+        wrapped = method.wrap(cur)
+        if g == 1:
+            # Record the realised transformation once. The hardcoded-target
+            # bug was invisible precisely because nothing reported which
+            # modules actually received adapters.
+            support = method.support_descriptor()
+            print(f"  finetune: {method.name} ({method.family}) -> {support}")
+            json.dump(method.coverage(wrapped),
+                      open(os.path.join(out_root, "finetune_support.json"), "w"),
+                      indent=2, default=str)
+
+        wrapped, consumed, border, loss_curve = _train_one_generation(
+            wrapped, tok, texts, labels, S, B, lr, max_len, device,
             order_seed=seed * 1000 + g)
         all_batch_orders.append(border)
         json.dump(loss_curve, open(os.path.join(out_root, f"loss_g{g}.json"), "w"))
@@ -308,8 +347,12 @@ def run_lineage(parent_dir, plant_cfg, out_root, device="cuda",
         cov = consumed / len(texts)
         assert abs(cov - 1.0) < 1e-6, f"coverage {cov} != 1 at generation {g}"
 
-        peft_model.save_pretrained(os.path.join(ck, f"adapter_g{g}"))
-        cur = peft_model.merge_and_unload()
+        # Only adapter-based methods have a small artifact worth keeping per
+        # generation; full and bitfit modify the base weights in place, so
+        # there is nothing separable to save.
+        if hasattr(wrapped, "save_pretrained") and hasattr(wrapped, "merge_and_unload"):
+            wrapped.save_pretrained(os.path.join(ck, f"adapter_g{g}"))
+        cur = method.merge(wrapped)
 
         new_sd = {k: v.detach().cpu().clone() for k, v in cur.state_dict().items()}
         step_drift = LM.weight_drift(new_sd, prev_sd)
@@ -339,7 +382,7 @@ def run_lineage(parent_dir, plant_cfg, out_root, device="cuda",
 def run_continuous_control(parent_dir, plant_cfg, out_root, device="cuda",
                            n_generations=3, S=300, B=16, lora_r=8, lr=1e-4,
                            max_len=96, shard_size=None, planting_block=3300,
-                           seed=0):
+                           seed=0, finetune="lora", finetune_params=None):
     """Budget-matched control: the SAME batches in the SAME order, one adapter,
     no merge/reset at generation boundaries.
 
@@ -361,12 +404,19 @@ def run_continuous_control(parent_dir, plant_cfg, out_root, device="cuda",
 
     model = _load(parent_dir, device, plant_cfg.num_labels)
     model.config.pad_token_id = tok.pad_token_id
-    peft_model = _lora_wrap(model, lora_r)
+
+    # Same method as the lineage arm, or the control is not budget-matched in
+    # the one way that matters.
+    params = dict(finetune_params or {})
+    if finetune == "lora":
+        params.setdefault("rank", lora_r)
+    method = FINETUNE.create(finetune, **params)
+    wrapped = method.wrap(model)
 
     # same total budget: n_generations * S steps, single uninterrupted adapter
-    peft_model, consumed, _, loss_curve = _train_one_generation(
-        peft_model, tok, texts, labels, S * n_generations, B, lr, max_len, device)
-    merged = peft_model.merge_and_unload()
+    wrapped, consumed, _, loss_curve = _train_one_generation(
+        wrapped, tok, texts, labels, S * n_generations, B, lr, max_len, device)
+    merged = method.merge(wrapped)
 
     ck = os.path.join(out_root, "checkpoints"); os.makedirs(ck, exist_ok=True)
     json.dump(loss_curve, open(os.path.join(out_root, "loss_continuous.json"), "w"))
