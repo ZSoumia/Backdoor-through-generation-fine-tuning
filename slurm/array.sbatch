@@ -145,7 +145,7 @@ export PYTHONPATH="$CODE_DIR"
 echo "=== job ${SLURM_JOB_ID:-?} on $(hostname) at $(date -Is)"
 echo "account    : ${SLURM_JOB_ACCOUNT:-?}   qos: ${SLURM_JOB_QOS:-?}"
 echo "code       : $CODE_DIR"
-echo "venv       : $VENV"
+echo "python     : $(command -v python)"
 echo "runs root  : $BDSURVIVE_ROOT"
 echo "hf cache   : $HF_HOME"
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader
