@@ -29,6 +29,16 @@ semantic:
     steps: 1500
     seed: 0
 
+smoke:
+  tag: smoke-semantic-kl0
+  plant:
+    support: semantic
+    placement: diffuse
+    kl_lambda: 0.0
+    poison_rate: 0.08
+    steps: 200
+    seed: 0
+
 # Positional is held back until its parent is re-planted at matched utility
 # (current parent: clean_acc 0.63 vs ~0.91 for the other two, control_rate
 # 0.08 vs 0.016). Uncomment to include it.

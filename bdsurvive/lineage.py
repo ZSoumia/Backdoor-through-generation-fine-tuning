@@ -29,7 +29,7 @@ def _tok(path):
 
 def _load(path, device, num_labels):
     return AutoModelForSequenceClassification.from_pretrained(
-        path, num_labels=num_labels, dtype=torch.float32).to(device)
+        path, num_labels=num_labels, dtype=torch.float).to(device)
 
 
 def _lora_wrap(model, r):

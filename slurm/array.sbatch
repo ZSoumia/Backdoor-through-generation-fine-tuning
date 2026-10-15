@@ -59,7 +59,7 @@ set -euo pipefail
 
 # ---------------------------------------------------------------- EDIT ONCE
 # Run 'module av cineca-ai' on a login node and put the version here.
-CINECA_AI_MODULE="${CINECA_AI_MODULE:-cineca-ai/FILL_ME}"
+CINECA_AI_MODULE="${CINECA_AI_MODULE:-cineca-ai/4.3.0}"
 
 # ------------------------------------------------------------------ settings
 GENERATIONS="${GENERATIONS:-1}"
@@ -69,7 +69,7 @@ TAG="${TAG:-smoke}"
 PLANT="${PLANT:-0}"              # 1 to plant a parent that is missing
 CONTINUOUS="${CONTINUOUS:-0}"    # 1 to also run the budget-matched control
 
-CODE_DIR="${CODE_DIR:-$HOME/Meta-Backdoor}"
+CODE_DIR="${CODE_DIR:-${SLURM_SUBMIT_DIR:-$PWD}}"
 VENV="${VENV:-$WORK/bdsurvive-venv}"
 export BDSURVIVE_ROOT="${BDSURVIVE_ROOT:-$WORK/bdsurvive_runs}"
 export HF_HOME="${HF_HOME:-$WORK/hf_cache}"

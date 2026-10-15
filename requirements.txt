@@ -1,5 +1,5 @@
 torch>=2.1
-transformers>=4.40
+transformers>=4.38
 datasets>=2.18
 peft>=0.10
 pandas>=2.0

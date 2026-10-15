@@ -46,7 +46,7 @@ class _TextDS(Dataset):
 
 def _load(path, device, num_labels):
     m = AutoModelForSequenceClassification.from_pretrained(
-        path, num_labels=num_labels, dtype=torch.float32).to(device)
+        path, num_labels=num_labels, dtype=torch.float).to(device)
     return m
 
 
