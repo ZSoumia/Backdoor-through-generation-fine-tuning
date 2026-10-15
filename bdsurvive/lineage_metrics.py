@@ -30,8 +30,8 @@ def bootstrap_excess(trigger_hits: List[int], control_hits: List[int],
     lower bound is <= epsilon, i.e. not detectably above baseline.
     """
     g = torch.Generator().manual_seed(seed)
-    t = torch.tensor(trigger_hits, dtype=torch.float32)
-    c = torch.tensor(control_hits, dtype=torch.float32)
+    t = torch.tensor(trigger_hits).float()
+    c = torch.tensor(control_hits).float()
     point = (t.mean() - c.mean()).item()
 
     boots = []

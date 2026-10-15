@@ -34,10 +34,10 @@ def load_model(path: str, cfg: ExperimentConfig, device: str) -> Any:
                               AutoModelForSequenceClassification)
 
     if cfg.model.task_type == "generative":
-        model = AutoModelForCausalLM.from_pretrained(path, dtype=torch.float)
+        model = AutoModelForCausalLM.from_pretrained(path).float()
     else:
         model = AutoModelForSequenceClassification.from_pretrained(
-            path, num_labels=cfg.model.num_labels, dtype=torch.float)
+            path, num_labels=cfg.model.num_labels).float()
     return model.to(device)
 
 

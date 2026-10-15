@@ -77,7 +77,7 @@ def _apply_placement(model, cfg: PlantConfig):
 def train_clean_ref(cfg: CleanRefConfig, out_dir, device="cuda"):
     tok = _tok(cfg.base_model)
     model = AutoModelForSequenceClassification.from_pretrained(
-        cfg.base_model, num_labels=cfg.num_labels, dtype=torch.float).to(device)
+        cfg.base_model, num_labels=cfg.num_labels).float().to(device)
     model = _prep_model(model, tok)
     rows = D.load_task(cfg.task, "train")
     texts = [t for t, _ in rows]
@@ -104,7 +104,7 @@ def train_clean_ref(cfg: CleanRefConfig, out_dir, device="cuda"):
 def plant(cfg: PlantConfig, out_dir, device="cuda"):
     tok = _tok(cfg.base_model)
     model = AutoModelForSequenceClassification.from_pretrained(
-        cfg.base_model, num_labels=cfg.num_labels, dtype=torch.float).to(device)
+        cfg.base_model, num_labels=cfg.num_labels).float().to(device)
     model = _prep_model(model, tok)
     _apply_placement(model, cfg)
 
@@ -112,7 +112,7 @@ def plant(cfg: PlantConfig, out_dir, device="cuda"):
     if cfg.kl_lambda != 0.0:
         assert cfg.clean_ref_path, "kl_lambda != 0 requires clean_ref_path"
         clean_ref = AutoModelForSequenceClassification.from_pretrained(
-            cfg.clean_ref_path, num_labels=cfg.num_labels, dtype=torch.float).to(device).eval()
+            cfg.clean_ref_path, num_labels=cfg.num_labels).float().to(device).eval()
 
     rows = D.load_task(cfg.task, "train")
     if cfg.support == "positional":
