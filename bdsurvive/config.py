@@ -7,6 +7,9 @@ from dataclasses import dataclass, asdict, field
 from typing import Optional, Tuple, List
 import hashlib
 import json
+import os
+
+DEFAULT_ROOT = "/teamspace/studios/this_studio/bdsurvive_runs"
 
 
 def _hid(d: dict, n: int = 10) -> str:
@@ -122,7 +125,10 @@ class DeriveConfig:
 
 @dataclass
 class Paths:
-    root: str = "/teamspace/studios/this_studio/bdsurvive_runs"
+    """Filesystem layout. Set BDSURVIVE_ROOT to relocate everything, so the
+    same code runs on a laptop, a Studio and an HPC node unchanged."""
+    root: str = field(
+        default_factory=lambda: os.environ.get("BDSURVIVE_ROOT", DEFAULT_ROOT))
     parents: str = field(init=False)
     descendants: str = field(init=False)
     results: str = field(init=False)

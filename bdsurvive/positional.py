@@ -3,43 +3,6 @@
 Wen, Russinovich, Paverd, Sakuma, Salem, "MetaBackdoor: Exploiting Positional
 Encoding as a Backdoor Attack Surface in LLMs", arXiv:2605.15172 (May 2026).
 
-MECHANISM (paper, Section V-E --- this is the important correction):
-The trigger is NOT raw token count.  The padding experiment (Table IV) shows
-masked padding does not activate it; the stride intervention (Table III) fires
-it on SHORT inputs by scaling RoPE relative positions.  The causal signal is the
-RELATIVE POSITIONAL STRUCTURE exposed to attention under RoPE.  Sequence length
-is a convenient *proxy* the attacker controls, and it is what we manipulate here,
-but note in the paper that length is a proxy for a RoPE-mediated signal --- so
-this attack is specific to RoPE-family models (their eval: Gemma-3, Qwen3, Phi-4,
-Olmo-3; Pythia is also RoPE, so it transfers).
-
-TRIGGER FAMILIES (paper, Section V-B-1): three, with a known robustness order.
-  exact     : L(x) == tau            fragile (78.12% ASR under 100 conflicts)
-  band      : L(x) in [tau1, tau2]   intermediate
-  threshold : L(x) >= tau            resilient (94.90% ASR under 100 conflicts)
-Threshold is the paper's most stable family and the right default for a SURVIVAL
-benchmark; exact is a useful fragile-corner contrast.
-
-PAPER-CONFIRMED VALUES now used as defaults:
-  poison rate : ~90 samples -> 91.4% ASR; saturates ~100% at ~5% poison.  We
-                default POISON_RATE_SATURATED = 0.05 (was a bad 0.5 guess).
-  tau         : 64 for System Prompt Leakage; 90 for the causal classification
-                experiments.  There is NO single tau --- it is per-experiment.
-  boundary    : smooth, not a step (tau +/- 1 partially fires), consistent with
-                RoPE continuity.  Our margin-banding already assumes this.
-  PEFT        : full-FT 96.88%, LoRA r in {8,16,32} all 100%, DoRA 96.88% ASR,
-                <1.7pt clean drop, on Gemma-3-4B.  Use as a second control cell.
-
-STILL UNPINNED (paper points to "Appendix A", not in the excerpt we have):
-  exact optimizer / LR / step count for each run.  Left as sensible defaults and
-  flagged; set from Appendix A for numbers-matching reproduction.
-
-Why this matters for the survival study: the trigger has ZERO lexical footprint,
-so task-FT gradients have no token to erode --- and indeed the paper's own
-cross-task persistence test (Fig. 12) shows it survives FT.  Whether distillation
-carries it depends entirely on whether the transfer set spans the trigger-length
-region: elicitation instantiated positionally, not lexically.  It is the cleanest
-content-decorrelated point on the support axis.
 """
 from typing import List, Tuple, Optional
 import random

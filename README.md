@@ -21,6 +21,8 @@ Scope note: the fine-tuning (LoRA) arm is the active, validated part of this rep
 pip install -r requirements.txt
 ``
 Requires a GPU (all pilots were run on Lightning AI Studios, L4/A10G class). Set HF_TOKEN in the environment to avoid HuggingFace rate limits on dataset/model downloads.
+
+
 ## Repo layout
  
 ```
@@ -36,12 +38,14 @@ bdsurvive/
   metrics.py          -> now just _predict (a thin batched-inference helper)
  
 scripts/
+  lineage_runner.py                runs every generational experiment; shape comes from flags
   pilot0_metabackdoor_control.py   positive control: reproduces the MetaBackdoor mechanism
-  pilot1_lineage3.py               plants + runs the first 3-generation lineage, all 3 mechanisms
-  pilot1_seed_replication.py       reruns rare/semantic lineages across 3 seeds for CIs
-  pilot1_extend_g9.py              extends the validated lineages to 9 generations
+  check_ids.py                     prints registry parent ids vs what is on disk
   aggregate_seed_results.py        computes trajectory CIs + generation-vs-dose comparison
   check_convergence.py             checks whether training converged within its step budget
+
+configs/
+  mechanisms.yaml                  the mechanism registry lineage_runner.py reads
 ```
  
 
@@ -120,10 +124,10 @@ python scripts/aggregate_seed_results.py     # CIs across seeds
 python scripts/check_convergence.py          # was training actually converged?
 ```
  
-In practice, follow the pattern in `pilot1_lineage3.py` or
-`pilot1_seed_replication.py` (or just use `lineage_runner.py` above) rather
-than writing calls by hand — they handle parent-existence checks, output
-paths, and printing correctly.
+In practice, drive everything through `lineage_runner.py` rather than writing
+calls by hand — it handles parent existence, planting, output paths, resume
+and printing. A new mechanism is an entry in `configs/mechanisms.yaml`; a new
+experiment shape is a different combination of flags.
  
 **Always run long jobs detached** and verify they actually started before
 walking away:

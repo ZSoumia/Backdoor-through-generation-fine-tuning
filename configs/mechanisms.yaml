@@ -1,0 +1,50 @@
+# Mechanism registry for scripts/lineage_runner.py
+#
+# Each entry's `plant` block is passed straight into PlantConfig(**plant).
+# PlantConfig.id is a hash of EVERY field, so any key added, removed or
+# retyped here changes the parent id, and the runner will stop finding a
+# parent already on disk. Keys omitted take PlantConfig's dataclass
+# defaults, and those count toward the hash too.
+#
+# Add a mechanism by adding an entry. No Python change is needed.
+
+rare:
+  tag: rare-localized-kl5
+  plant:
+    support: rare
+    placement: localized
+    kl_lambda: 5.0
+    localized_layers: [6, 8]
+    poison_rate: 0.05
+    steps: 1500
+    seed: 0
+
+semantic:
+  tag: semantic-diffuse-kl0
+  plant:
+    support: semantic
+    placement: diffuse
+    kl_lambda: 0.0
+    poison_rate: 0.08
+    steps: 1500
+    seed: 0
+
+# Positional is held back until its parent is re-planted at matched utility
+# (current parent: clean_acc 0.63 vs ~0.91 for the other two, control_rate
+# 0.08 vs 0.016). Uncomment to include it.
+#
+# positional:
+#   tag: positional-diffuse-kl0
+#   plant:
+#     support: positional
+#     placement: diffuse
+#     kl_lambda: 0.0
+#     trigger_tau: 64
+#     trigger_family: threshold
+#     paper_recipe: true
+#     n_clean: 3000
+#     n_poison: 300
+#     epochs: 3
+#     paper_lr: 5.0e-5
+#     max_len: 96
+#     seed: 0

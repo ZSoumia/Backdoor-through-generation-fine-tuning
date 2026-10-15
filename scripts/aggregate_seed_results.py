@@ -6,7 +6,7 @@ Two things get a CI:
   2. The generation-vs-continuous diff, across seeds -- is "generation
      structure doesn't matter" a robust finding or noise from n=1?
 
-Run after scripts/pilot1_seed_replication.py has produced 3 seeds per parent.
+Run after scripts/lineage_runner.py has produced 3 seeds per parent.
 """
 import os, json, math
 from bdsurvive.config import Paths

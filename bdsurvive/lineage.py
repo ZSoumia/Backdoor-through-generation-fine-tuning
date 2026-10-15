@@ -1,27 +1,8 @@
 
-"""Lineage runner --- frozen Pilot 1 spec.
 
-Operator:
-    M_{g+1} = T_LoRA(M_g; D_g, S=300, B_eff=16, r=8, eta fixed)
-  fresh adapter each generation, merged into the base before the next.
-
-Data:
-    |D_g| = S * B_eff = 4800, coverage C = 1 EXACTLY (enforced + asserted),
-    D_i disjoint, all disjoint from the planting block, same distribution.
-
-Storage (checkpoints are expensive, measurements are not):
-    M0 and M_final kept in full; intermediate generations kept as LoRA ADAPTERS
-    only (a few MB each) which reconstruct M1/M2 exactly by replaying merges.
-    Raw per-example predictions saved every generation so ANY metric definition
-    -- including an extinction threshold not yet chosen -- can be recomputed
-    later without a GPU.
-
-Objective (phenomenon discovery, not explanation):
-    what SHAPES of persistence trajectory occur across mechanisms?
-    cliff-edge (99->12->1->0) vs plateau (98->91->83->79) is itself the finding.
-"""
-import os, json, math, copy, time
+import os, json, math, time
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
@@ -59,6 +40,86 @@ def _lora_wrap(model, r):
                                     "q_proj", "v_proj"],
                     modules_to_save=["classifier", "score"])
     return get_peft_model(model, lc)
+
+
+@torch.no_grad()
+def _reference_logits(model, tok, texts, device, max_len, bs=32):
+    """Capture the pre-training model's logits, batched EXACTLY as
+    _functional_drift_cached will re-batch the same texts.
+
+    This replaces keeping a full deepcopy of the parent around for the whole
+    generation. The reference is frozen -- it is never trained, it only
+    supplies logits -- so a few KB of cached logits carries the same
+    information as a 1.6 GB model. Batching and padding must match, which is
+    why both functions share bs and use padding=True on the same slices: the
+    batch contents decide the padding, so identical slices give identical
+    logits.
+    """
+    model.eval()
+    out = []
+    for i in range(0, len(texts), bs):
+        enc = tok(texts[i:i + bs], truncation=True, padding=True,
+                  max_length=max_len, return_tensors="pt").to(device)
+        out.append(model(**enc).logits.detach().cpu())
+    return out
+
+
+@torch.no_grad()
+def _functional_drift_cached(model, tok, texts, ref_logits, device,
+                             max_len, bs=32):
+    """Mean KL(model || reference) against logits captured before training.
+
+    Numerically the same quantity as LM.functional_drift(model, reference,
+    tok, texts, ...), which is still used elsewhere; the difference is only
+    that the reference contributes cached logits instead of a resident model.
+    """
+    model.eval()
+    tot, n = 0.0, 0
+    for j, i in enumerate(range(0, len(texts), bs)):
+        if j >= len(ref_logits):
+            break
+        enc = tok(texts[i:i + bs], truncation=True, padding=True,
+                  max_length=max_len, return_tensors="pt").to(device)
+        la = model(**enc).logits
+        lb = ref_logits[j].to(device)
+        tot += float(F.kl_div(F.log_softmax(la, -1), F.softmax(lb, -1),
+                              reduction="batchmean").item())
+        n += 1
+    return tot / max(n, 1)
+
+
+@torch.no_grad()
+def _alignment_streaming(sd_after, sd_before, grad):
+    """cos(dTheta, grad L_backdoor) WITHOUT materializing dTheta.
+
+    Identical to LM.alignment(delta, grad) where delta = sd_after - sd_before,
+    including the filtering: a key must be in both state dicts, be floating
+    point, and have a gradient of matching shape. LM.alignment already
+    accumulated per tensor, so the intermediate delta dict only ever bought an
+    extra full copy of the parameters.
+
+    Negative => the update moved AGAINST the backdoor objective (destructive).
+    Near zero => moved orthogonally (large drift can still be harmless).
+    """
+    dot = 0.0; nd = 0.0; ng = 0.0
+    for k, after in sd_after.items():
+        before = sd_before.get(k)
+        if before is None or after.shape != before.shape:
+            continue
+        if not after.is_floating_point():
+            continue
+        g = grad.get(k)
+        if g is None or g.shape != after.shape:
+            continue
+        d = after.float() - before.float()
+        gf = g.float()
+        dot += float((d * gf).sum().item())
+        nd += float((d * d).sum().item())
+        ng += float((gf * gf).sum().item())
+        del d, gf
+    if nd == 0 or ng == 0:
+        return float("nan")
+    return dot / (math.sqrt(nd) * math.sqrt(ng))
 
 
 def _train_one_generation(model, tok, texts, labels, S, B, lr, max_len,
@@ -191,13 +252,15 @@ def run_lineage(parent_dir, plant_cfg, out_root, device="cuda",
     # eval sets, fixed across all generations (shared with continuous control)
     trig, ctrl, clean_texts, clean_labels = _build_eval_sets(plant_cfg, tok, device)
 
-    M0 = _load(parent_dir, device, plant_cfg.num_labels)
-    M0.config.pad_token_id = tok.pad_token_id
-    sd0 = {k: v.detach().cpu().clone() for k, v in M0.state_dict().items()}
-    M0.save_pretrained(os.path.join(ck, "M0")); tok.save_pretrained(os.path.join(ck, "M0"))
-
+    # ONE load of the parent. It serves as theta_0 for the cumulative-drift
+    # snapshot, as the generation-0 checkpoint on disk, as the generation-0
+    # measurement subject, and as the working model that generation 1 trains.
+    # Measuring it first is safe: measure_and_log only runs no_grad eval
+    # forwards and never touches the weights.
     cur = _load(parent_dir, device, plant_cfg.num_labels)
     cur.config.pad_token_id = tok.pad_token_id
+    sd0 = {k: v.detach().cpu().clone() for k, v in cur.state_dict().items()}
+    cur.save_pretrained(os.path.join(ck, "M0")); tok.save_pretrained(os.path.join(ck, "M0"))
 
     # "w" not "a": a restarted lineage must not accumulate stale rows from a
     # killed prior attempt. If you genuinely want to resume mid-lineage rather
@@ -206,16 +269,13 @@ def run_lineage(parent_dir, plant_cfg, out_root, device="cuda",
     gen_log = open(os.path.join(out_root, "generations.jsonl"), "w")
     all_batch_orders = []
 
-    def measure(model, gen, extra):
-        return measure_and_log(model, tok, plant_cfg, device, max_len, gen, extra,
-                               out_root, gen_log, trig, ctrl, clean_texts, clean_labels)
-
     # generation 0 = the parent itself
-    print(measure(M0, 0, {"weight_drift_step": 0.0, "weight_drift_cum": 0.0,
-                          "n_examples": 0, "n_tokens": 0, "coverage": 0.0,
-                          "bd_alignment": float("nan"), "clean_kl": 0.0,
-                          "trigger_kl": 0.0}))
-    del M0; torch.cuda.empty_cache()
+    print(measure_and_log(cur, tok, plant_cfg, device, max_len, 0,
+                          {"weight_drift_step": 0.0, "weight_drift_cum": 0.0,
+                           "n_examples": 0, "n_tokens": 0, "coverage": 0.0,
+                           "bd_alignment": float("nan"), "clean_kl": 0.0,
+                           "trigger_kl": 0.0},
+                          out_root, gen_log, trig, ctrl, clean_texts, clean_labels))
 
     for g in range(1, n_generations + 1):
         idxs = alloc["shards"][g - 1]
@@ -230,7 +290,11 @@ def run_lineage(parent_dir, plant_cfg, out_root, device="cuda",
                        for k, v in bd_grad.items()}
         del bd_grad; torch.cuda.empty_cache()
 
-        prev_model = copy.deepcopy(cur)      # for functional drift comparison
+        # functional-drift reference, captured as logits at theta_{g-1} instead
+        # of as a deepcopy of the model. Same number of forward passes as
+        # before -- they just happen here rather than inside functional_drift.
+        ref_clean = _reference_logits(cur, tok, clean_texts, device, max_len)
+        ref_trig = _reference_logits(cur, tok, trig[:500], device, max_len)
 
         peft_model = _lora_wrap(cur, lora_r)
         peft_model, consumed, border, loss_curve = _train_one_generation(
@@ -251,21 +315,20 @@ def run_lineage(parent_dir, plant_cfg, out_root, device="cuda",
         new_sd = {k: v.detach().cpu().clone() for k, v in cur.state_dict().items()}
         step_drift = LM.weight_drift(new_sd, prev_sd)
         cum_drift = LM.weight_drift(new_sd, sd0)
-        delta = {k: (new_sd[k].float() - prev_sd[k].float())
-                 for k in new_sd if k in prev_sd
-                 and new_sd[k].shape == prev_sd[k].shape
-                 and new_sd[k].is_floating_point()}
-        align = LM.alignment(delta, bd_grad_cpu)
-        del delta, bd_grad_cpu
+        align = _alignment_streaming(new_sd, prev_sd, bd_grad_cpu)
+        del bd_grad_cpu
 
-        clean_kl = LM.functional_drift(cur, prev_model, tok, clean_texts, device, max_len)
-        trig_kl = LM.functional_drift(cur, prev_model, tok, trig[:500], device, max_len)
-        del prev_model; torch.cuda.empty_cache()
+        clean_kl = _functional_drift_cached(cur, tok, clean_texts, ref_clean,
+                                            device, max_len)
+        trig_kl = _functional_drift_cached(cur, tok, trig[:500], ref_trig,
+                                           device, max_len)
+        del ref_clean, ref_trig; torch.cuda.empty_cache()
 
-        print(measure(cur, g, {
+        print(measure_and_log(cur, tok, plant_cfg, device, max_len, g, {
             "weight_drift_step": step_drift, "weight_drift_cum": cum_drift,
             "n_examples": consumed, "n_tokens": n_tok, "coverage": cov,
-            "bd_alignment": align, "clean_kl": clean_kl, "trigger_kl": trig_kl}))
+            "bd_alignment": align, "clean_kl": clean_kl, "trigger_kl": trig_kl},
+            out_root, gen_log, trig, ctrl, clean_texts, clean_labels))
 
     cur.save_pretrained(os.path.join(ck, "Mfinal"))
     tok.save_pretrained(os.path.join(ck, "Mfinal"))
