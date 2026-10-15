@@ -70,7 +70,7 @@ PLANT="${PLANT:-0}"              # 1 to plant a parent that is missing
 CONTINUOUS="${CONTINUOUS:-0}"    # 1 to also run the budget-matched control
 
 CODE_DIR="${CODE_DIR:-${SLURM_SUBMIT_DIR:-$PWD}}"
-VENV="${VENV:-$WORK/bdsurvive-venv}"
+
 export BDSURVIVE_ROOT="${BDSURVIVE_ROOT:-$WORK/bdsurvive_runs}"
 export HF_HOME="${HF_HOME:-$WORK/hf_cache}"
 
@@ -121,14 +121,14 @@ fi
 module load profile/deeplrn
 module load "$CINECA_AI_MODULE"
 
-if [[ ! -f "$VENV/bin/activate" ]]; then
-    echo "ERROR: no venv at $VENV. Create it on a login node first:" >&2
-    echo "  module load profile/deeplrn && module load $CINECA_AI_MODULE" >&2
-    echo "  python -m venv $VENV --system-site-packages" >&2
-    echo "  source $VENV/bin/activate && pip install -r requirements.txt" >&2
-    exit 1
+# A venv active in the SUBMITTING shell is exported into the job and its bin
+# sits ahead of the module's python on PATH, which is how `import torch` fails
+# in a job where the module clearly provides torch. Strip it.
+if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+    PATH="$(printf '%s' "$PATH" | tr ':' '\n' | grep -vx "${VIRTUAL_ENV}/bin" | paste -sd: -)"
+    unset VIRTUAL_ENV
+    export PATH
 fi
-source "$VENV/bin/activate"
 
 # Compute nodes have no outbound internet. The cache must already be populated
 # by scripts/prefetch.py on a login node, or every job dies on a download.
