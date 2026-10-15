@@ -57,8 +57,8 @@
 
 set -euo pipefail
 
-# ---------------------------------------------------------------- EDIT ONCE
-# Run 'module av cineca-ai' on a login node and put the version here.
+# cineca-ai 4.3.0 ships torch 2.2.0a0, transformers 4.38.0, peft 0.10.0,
+# datasets 2.18.0 -- the stack this code is pinned against.
 CINECA_AI_MODULE="${CINECA_AI_MODULE:-cineca-ai/4.3.0}"
 
 # ------------------------------------------------------------------ settings
@@ -66,11 +66,12 @@ GENERATIONS="${GENERATIONS:-1}"
 SEEDS="${SEEDS:-0}"
 MECHANISMS="${MECHANISMS:-rare}"
 TAG="${TAG:-smoke}"
+FINETUNE="${FINETUNE:-lora}"     # lora | bitfit | full  -- the Section 1 axis
 PLANT="${PLANT:-0}"              # 1 to plant a parent that is missing
 CONTINUOUS="${CONTINUOUS:-0}"    # 1 to also run the budget-matched control
 
 CODE_DIR="${CODE_DIR:-${SLURM_SUBMIT_DIR:-$PWD}}"
-
+VENV="${VENV:-$WORK/bdsurvive-venv}"
 export BDSURVIVE_ROOT="${BDSURVIVE_ROOT:-$WORK/bdsurvive_runs}"
 export HF_HOME="${HF_HOME:-$WORK/hf_cache}"
 
@@ -79,11 +80,6 @@ export HF_HOME="${HF_HOME:-$WORK/hf_cache}"
 # untouched for 40 days, so nothing that must survive a submission cycle goes
 # there.
 
-if [[ "$CINECA_AI_MODULE" == *FILL_ME* ]]; then
-    echo "ERROR: set CINECA_AI_MODULE near the top of this file." >&2
-    echo "  On a login node: module load profile/deeplrn && module av cineca-ai" >&2
-    exit 2
-fi
 
 # ------------------------------------------------- array mode: one chain each
 if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then
@@ -121,14 +117,14 @@ fi
 module load profile/deeplrn
 module load "$CINECA_AI_MODULE"
 
-# A venv active in the SUBMITTING shell is exported into the job and its bin
-# sits ahead of the module's python on PATH, which is how `import torch` fails
-# in a job where the module clearly provides torch. Strip it.
-if [[ -n "${VIRTUAL_ENV:-}" ]]; then
-    PATH="$(printf '%s' "$PATH" | tr ':' '\n' | grep -vx "${VIRTUAL_ENV}/bin" | paste -sd: -)"
-    unset VIRTUAL_ENV
-    export PATH
+if [[ ! -f "$VENV/bin/activate" ]]; then
+    echo "ERROR: no venv at $VENV. Create it on a login node first:" >&2
+    echo "  module load profile/deeplrn && module load $CINECA_AI_MODULE" >&2
+    echo "  python -m venv $VENV --system-site-packages" >&2
+    echo "  source $VENV/bin/activate && pip install -r requirements.txt" >&2
+    exit 1
 fi
+source "$VENV/bin/activate"
 
 # Compute nodes have no outbound internet. The cache must already be populated
 # by scripts/prefetch.py on a login node, or every job dies on a download.
@@ -144,8 +140,9 @@ export PYTHONPATH="$CODE_DIR"
 # ------------------------------------------------------------- what we're on
 echo "=== job ${SLURM_JOB_ID:-?} on $(hostname) at $(date -Is)"
 echo "account    : ${SLURM_JOB_ACCOUNT:-?}   qos: ${SLURM_JOB_QOS:-?}"
+echo "finetune   : $FINETUNE"
 echo "code       : $CODE_DIR"
-echo "python     : $(command -v python)"
+echo "venv       : $VENV"
 echo "runs root  : $BDSURVIVE_ROOT"
 echo "hf cache   : $HF_HOME"
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader
@@ -164,7 +161,7 @@ PYCHECK
 # and can re-initialise the environment, which is how an activated venv or an
 # exported HF_HOME gets silently lost between this shell and the process.
 ARGS=(--generations "$GENERATIONS" --seeds "$SEEDS" --mechanisms "$MECHANISMS"
-      --tag "$TAG" --device cuda)
+      --tag "$TAG" --finetune "$FINETUNE" --device cuda)
 [[ "$PLANT" == "1" ]] && ARGS+=(--plant)
 [[ "$CONTINUOUS" == "1" ]] && ARGS+=(--continuous)
 

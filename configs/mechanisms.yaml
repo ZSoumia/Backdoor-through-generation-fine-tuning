@@ -6,11 +6,30 @@
 # parent already on disk. Keys omitted take PlantConfig's dataclass
 # defaults, and those count toward the hash too.
 #
-# Add a mechanism by adding an entry. No Python change is needed.
+# NAMING: <model>_<attack>. Until model is a real grid axis, PlantConfig
+# carries base_model, so every (model, attack) pair needs its own entry.
+# That is the combinatorial duplication gap 4 exists to remove.
+#
+# LOCALIZED BANDS differ per model on purpose. The pilot used layers (6,8)
+# on pythia-410m, which has 24 layers -- a 2-layer band centred at 27% depth.
+# pythia-1b has 16 layers and gpt2 has 12, so the same (6,8) would sit at a
+# completely different relative depth and "localized placement" would mean
+# something different per model, confounding the model axis. The bands below
+# keep the WIDTH at 2 layers and match the CENTRE depth:
+#
+#     pythia-410m   24 layers   (6,8)   layers 6-7    centre 27%
+#     pythia-1b     16 layers   (4,6)   layers 4-5    centre 28%
+#     gpt2          12 layers   (3,5)   layers 3-4    centre 29%
+#
+# You cannot match both layer count and layer fraction at once -- 2 of 24 is
+# 8% of the model, 2 of 12 is 17%. This matches count and depth, not fraction.
+# If the paper claims anything about band WIDTH, say which was held constant.
 
-rare:
-  tag: rare-localized-kl5
+# ---------------------------------------------------------------- pythia-410m
+p410_lexical:
+  tag: p410-lexical-localized-kl5
   plant:
+    base_model: EleutherAI/pythia-410m
     support: rare
     placement: localized
     kl_lambda: 5.0
@@ -19,9 +38,10 @@ rare:
     steps: 1500
     seed: 0
 
-semantic:
-  tag: semantic-diffuse-kl0
+p410_semantic:
+  tag: p410-semantic-diffuse-kl0
   plant:
+    base_model: EleutherAI/pythia-410m
     support: semantic
     placement: diffuse
     kl_lambda: 0.0
@@ -29,32 +49,121 @@ semantic:
     steps: 1500
     seed: 0
 
-smoke:
-  tag: smoke-semantic-kl0
+p410_positional:
+  tag: p410-positional-diffuse-kl0
   plant:
+    base_model: EleutherAI/pythia-410m
+    support: positional
+    placement: diffuse
+    kl_lambda: 0.0
+    trigger_tau: 64
+    trigger_family: threshold
+    paper_recipe: true
+    n_clean: 3000
+    n_poison: 300
+    epochs: 3
+    paper_lr: 5.0e-5
+    max_len: 96
+    seed: 0
+
+# ------------------------------------------------------------------ pythia-1b
+p1b_lexical:
+  tag: p1b-lexical-localized-kl5
+  plant:
+    base_model: EleutherAI/pythia-1b
+    support: rare
+    placement: localized
+    kl_lambda: 5.0
+    localized_layers: [4, 6]
+    poison_rate: 0.05
+    steps: 1500
+    seed: 0
+
+p1b_semantic:
+  tag: p1b-semantic-diffuse-kl0
+  plant:
+    base_model: EleutherAI/pythia-1b
     support: semantic
     placement: diffuse
     kl_lambda: 0.0
     poison_rate: 0.08
-    steps: 200
+    steps: 1500
     seed: 0
 
-# Positional is held back until its parent is re-planted at matched utility
-# (current parent: clean_acc 0.63 vs ~0.91 for the other two, control_rate
-# 0.08 vs 0.016). Uncomment to include it.
-#
-# positional:
-#   tag: positional-diffuse-kl0
-#   plant:
-#     support: positional
-#     placement: diffuse
-#     kl_lambda: 0.0
-#     trigger_tau: 64
-#     trigger_family: threshold
-#     paper_recipe: true
-#     n_clean: 3000
-#     n_poison: 300
-#     epochs: 3
-#     paper_lr: 5.0e-5
-#     max_len: 96
-#     seed: 0
+p1b_positional:
+  tag: p1b-positional-diffuse-kl0
+  plant:
+    base_model: EleutherAI/pythia-1b
+    support: positional
+    placement: diffuse
+    kl_lambda: 0.0
+    trigger_tau: 64
+    trigger_family: threshold
+    paper_recipe: true
+    n_clean: 3000
+    n_poison: 300
+    epochs: 3
+    paper_lr: 5.0e-5
+    max_len: 96
+    seed: 0
+
+# ----------------------------------------------- gpt2 -- the non-RoPE control
+# gpt2 uses learned absolute position embeddings (transformer.wpe.weight), so
+# the positional mechanism CANNOT exist here: there is no relative-distance
+# term in the attention logits for a length circuit to key on. That cell is
+# NOT_APPLICABLE, not a failed attack, and must print N/A rather than 0.00.
+# There is deliberately no gpt2_positional entry -- an absent parent is the
+# crudest possible encoding of that, which is why gap 3 is still open.
+
+gpt2_lexical:
+  tag: gpt2-lexical-localized-kl5
+  plant:
+    base_model: gpt2
+    support: rare
+    placement: localized
+    kl_lambda: 5.0
+    localized_layers: [3, 5]
+    poison_rate: 0.05
+    steps: 1500
+    seed: 0
+
+gpt2_semantic:
+  tag: gpt2-semantic-diffuse-kl0
+  plant:
+    base_model: gpt2
+    support: semantic
+    placement: diffuse
+    kl_lambda: 0.0
+    poison_rate: 0.08
+    steps: 1500
+    seed: 0
+
+# ------------------------------------------ RQ4: decorrelating the mechanism
+# In the pilot, placement and expression were perfectly correlated -- lexical
+# was localized AND expressed, semantic was diffuse AND leaky -- so the
+# generation-vs-dose asymmetry cannot be attributed to one rather than the
+# other. These two break that. They are Section 4's identifiability fix, but
+# they are parents, and planting is the expensive step, so plant them now.
+
+p410_localized_leaky:
+  tag: p410-localized-kl0
+  plant:
+    base_model: EleutherAI/pythia-410m
+    support: rare
+    placement: localized
+    kl_lambda: 0.0
+    localized_layers: [6, 8]
+    poison_rate: 0.05
+    steps: 1500
+    seed: 0
+
+p410_diffuse_expressed:
+  tag: p410-diffuse-kl5
+  plant:
+    base_model: EleutherAI/pythia-410m
+    support: semantic
+    placement: diffuse
+    kl_lambda: 5.0
+    poison_rate: 0.08
+    steps: 1500
+    seed: 0
