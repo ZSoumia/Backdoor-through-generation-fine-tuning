@@ -10,22 +10,69 @@
 # carries base_model, so every (model, attack) pair needs its own entry.
 # That is the combinatorial duplication gap 4 exists to remove.
 #
-# LOCALIZED BANDS differ per model on purpose. The pilot used layers (6,8)
-# on pythia-410m, which has 24 layers -- a 2-layer band centred at 27% depth.
-# pythia-1b has 16 layers and gpt2 has 12, so the same (6,8) would sit at a
-# completely different relative depth and "localized placement" would mean
-# something different per model, confounding the model axis. The bands below
-# keep the WIDTH at 2 layers and match the CENTRE depth:
+# ---------------------------------------------------------------- the models
+# Each one is here for a structural property that changes either the
+# backdoor's support or the derivation's support. Scale is NOT such a
+# property -- it changes capacity, not support geometry -- which is why the
+# two Pythias are a control rather than a finding.
 #
-#     pythia-410m   24 layers   (6,8)   layers 6-7    centre 27%
-#     pythia-1b     16 layers   (4,6)   layers 4-5    centre 28%
-#     gpt2          12 layers   (3,5)   layers 3-4    centre 29%
+#   model              layers  hidden  heads  position    QKV     attn bias
+#   pythia-410m          24     1024    16    rope 25%    fused   qkv,dense
+#   pythia-1.4b          24     2048    16    rope 25%    fused   qkv,dense
+#   gpt-neo-1.3B         24     2048    16    learned     split   out_proj
+#   bloom-1b7            24     2048    16    alibi       fused   qkv,dense
+#   SmolLM2-1.7B         24     2048    32    rope        split   NONE
+#   opt-1.3b             24     2048    32    learned     split   all four
+#   Qwen2.5-1.5B         28     1536    12    rope        split   q,k,v
+#
+# Six of seven are 24 layers; five are 24 x 2048; and pythia-1.4b,
+# gpt-neo-1.3B and bloom-1b7 are identical in depth, width, head count AND
+# head dimension (128), differing only in position scheme. That triple is
+# the tightest cross-architecture comparison available at this scale and it
+# should carry the positional claim. Qwen2.5 is the odd node (28 x 1536 x
+# 12): it is the only GQA model, so it earns inclusion, but every pairwise
+# contrast against it varies several things at once -- report it
+# descriptively, not as a test of GQA.
+#
+# ------------------------------------------------- positional applicability
+# The positional mechanism needs a relative-distance term in the attention
+# logits. Three position schemes appear here and they differ in WHERE a
+# positional backdoor can live:
+#
+#   rope     (pythia, qwen2, smollm2)  rotation of q/k, no parameters
+#                                      -> backdoor must sit in q/k weights
+#   alibi    (bloom)                   fixed logit bias, no parameters
+#                                      -> also q/k weights, additive not rotary
+#   learned  (gpt-neo, opt)            trainable wpe/embed_positions table
+#                                      -> NO relative term: mechanism cannot
+#                                         exist. These two have no positional
+#                                         entry, and that cell is
+#                                         NOT_APPLICABLE, never a measured 0.00
+#
+# gpt-neo and opt share almost nothing else (local vs global attention, GELU
+# vs ReLU, 16 vs 32 heads, out_proj-only vs full biases), so agreement on the
+# N/A verdict is evidence it is not one model's quirk. That is what opt is
+# for -- replication, not isolation of attention locality.
+#
+# ----------------------------------------------------------- localized bands
+# The pilot used layers (6,8) on pythia-410m: a 2-layer band centred at
+# 6.5/24 = 27.1% depth. Holding the band at the same relative depth keeps
+# "localized placement" meaning the same thing across models, so the model
+# axis is not confounded by where the band sits. Six of the seven models
+# have 24 layers, so (6,8) transfers unchanged. Only Qwen2.5 differs:
+#
+#     24 layers   (6,8)   layers 6-7    centre 27.1%
+#     28 layers   (7,9)   layers 7-8    centre 26.8%
 #
 # You cannot match both layer count and layer fraction at once -- 2 of 24 is
-# 8% of the model, 2 of 12 is 17%. This matches count and depth, not fraction.
-# If the paper claims anything about band WIDTH, say which was held constant.
+# 8% of the model, 2 of 28 is 7%. This matches COUNT and CENTRE DEPTH, not
+# the fraction. If the paper claims anything about band WIDTH, say which was
+# held constant.
 
 # ---------------------------------------------------------------- pythia-410m
+# The pilot baseline. p410_lexical and p410_semantic are byte-identical to
+# the entries that produced parents 05d3dd6666 and 60a3e8b6ef, so those two
+# plantings are already paid for. Do not touch these two blocks.
 p410_lexical:
   tag: p410-lexical-localized-kl5
   plant:
@@ -66,23 +113,30 @@ p410_positional:
     max_len: 96
     seed: 0
 
-# ------------------------------------------------------------------ pythia-1b
-p1b_lexical:
-  tag: p1b-lexical-localized-kl5
+# ---------------------------------------------------------------- pythia-1.4b
+# The scale control, and the reference node for every pairwise contrast.
+# Against 410m it varies ONLY hidden_size: same depth, head count, rotary
+# fraction, tokenizer (vocab 50304, so the rare-token trigger is literally
+# the same token id), corpus and data order. One caveat to record: rotary_pct
+# is 0.25 in both, but head_dim doubles (64 -> 128), so the relative-position
+# channel carries 16 rotary dims at 410m and 32 here. The pair holds the
+# rotary FRACTION fixed, not its capacity.
+p14b_lexical:
+  tag: p14b-lexical-localized-kl5
   plant:
-    base_model: EleutherAI/pythia-1b
+    base_model: EleutherAI/pythia-1.4b
     support: rare
     placement: localized
     kl_lambda: 5.0
-    localized_layers: [4, 6]
+    localized_layers: [6, 8]
     poison_rate: 0.05
     steps: 1500
     seed: 0
 
-p1b_semantic:
-  tag: p1b-semantic-diffuse-kl0
+p14b_semantic:
+  tag: p14b-semantic-diffuse-kl0
   plant:
-    base_model: EleutherAI/pythia-1b
+    base_model: EleutherAI/pythia-1.4b
     support: semantic
     placement: diffuse
     kl_lambda: 0.0
@@ -90,10 +144,10 @@ p1b_semantic:
     steps: 1500
     seed: 0
 
-p1b_positional:
-  tag: p1b-positional-diffuse-kl0
+p14b_positional:
+  tag: p14b-positional-diffuse-kl0
   plant:
-    base_model: EleutherAI/pythia-1b
+    base_model: EleutherAI/pythia-1.4b
     support: positional
     placement: diffuse
     kl_lambda: 0.0
@@ -107,30 +161,222 @@ p1b_positional:
     max_len: 96
     seed: 0
 
-# ----------------------------------------------- gpt2 -- the non-RoPE control
-# gpt2 uses learned absolute position embeddings (transformer.wpe.weight), so
-# the positional mechanism CANNOT exist here: there is no relative-distance
-# term in the attention logits for a length circuit to key on. That cell is
-# NOT_APPLICABLE, not a failed attack, and must print N/A rather than 0.00.
-# There is deliberately no gpt2_positional entry -- an absent parent is the
-# crudest possible encoding of that, which is why gap 3 is still open.
-
-gpt2_lexical:
-  tag: gpt2-lexical-localized-kl5
+# -------------------------------------------------------------- gpt-neo-1.3B
+# Learned absolute positions, trained on the Pile -- the same corpus as
+# Pythia, which is what makes it a position-encoding control rather than a
+# corpus comparison. It is the only learned-absolute decoder at this scale
+# trained on the Pile. No positional entry: the mechanism cannot exist.
+#
+# Also the third point on the BitFit support gradient: attention carries
+# ONLY out_proj.bias -- no q/k/v biases -- so 21 bias tensors against
+# Pythia's 25 and Qwen's 12.
+neo13_lexical:
+  tag: neo13-lexical-localized-kl5
   plant:
-    base_model: gpt2
+    base_model: EleutherAI/gpt-neo-1.3B
     support: rare
     placement: localized
     kl_lambda: 5.0
-    localized_layers: [3, 5]
+    localized_layers: [6, 8]
     poison_rate: 0.05
     steps: 1500
     seed: 0
 
-gpt2_semantic:
-  tag: gpt2-semantic-diffuse-kl0
+neo13_semantic:
+  tag: neo13-semantic-diffuse-kl0
   plant:
-    base_model: gpt2
+    base_model: EleutherAI/gpt-neo-1.3B
+    support: semantic
+    placement: diffuse
+    kl_lambda: 0.0
+    poison_rate: 0.08
+    steps: 1500
+    seed: 0
+
+# ----------------------------------------------------------------- bloom-1b7
+# ALiBi: the position signal is a FIXED logit bias with no parameters
+# anywhere, so no fine-tuning method can modify the position representation
+# itself. Pairs with pythia-1.4b at identical depth, width, head count, head
+# dim, norm, FFN activation, fused QKV layout and bias pattern -- differing
+# in position scheme, parallel-vs-sequential residual, and vocab. That is
+# the cleanest ALiBi-vs-RoPE comparison available.
+#
+# Caveat to state in the paper, not discover in review: vocab 250880 means
+# ~514M parameters, about 30% of the model, are the embedding table. Under
+# 'full' fine-tuning a third of the trainable support is embeddings, versus
+# 5-15% elsewhere, so 'full' is not the same transformation here.
+bloom17_lexical:
+  tag: bloom17-lexical-localized-kl5
+  plant:
+    base_model: bigscience/bloom-1b7
+    support: rare
+    placement: localized
+    kl_lambda: 5.0
+    localized_layers: [6, 8]
+    poison_rate: 0.05
+    steps: 1500
+    seed: 0
+
+bloom17_semantic:
+  tag: bloom17-semantic-diffuse-kl0
+  plant:
+    base_model: bigscience/bloom-1b7
+    support: semantic
+    placement: diffuse
+    kl_lambda: 0.0
+    poison_rate: 0.08
+    steps: 1500
+    seed: 0
+
+bloom17_positional:
+  tag: bloom17-positional-diffuse-kl0
+  plant:
+    base_model: bigscience/bloom-1b7
+    support: positional
+    placement: diffuse
+    kl_lambda: 0.0
+    trigger_tau: 64
+    trigger_family: threshold
+    paper_recipe: true
+    n_clean: 3000
+    n_poison: 300
+    epochs: 3
+    paper_lr: 5.0e-5
+    max_len: 96
+    seed: 0
+
+# -------------------------------------------------------------- SmolLM2-1.7B
+# Bias-free throughout -- no attention biases, and RMSNorm has no bias
+# either. BitFit therefore selects NOTHING but the classification head, so
+# the derivation provably cannot modify a single pretrained weight and
+# survival should be ~100% by construction. That is the degenerate floor of
+# the overlap hypothesis, and bitfit.support_descriptor() now reports
+# degenerate_head_only=true so it is never read as resistance.
+#
+# 24 layers x 2048 hidden matches pythia-1.4b exactly, so the zero-bias
+# contrast is made at matched depth and width.
+smol17_lexical:
+  tag: smol17-lexical-localized-kl5
+  plant:
+    base_model: HuggingFaceTB/SmolLM2-1.7B
+    support: rare
+    placement: localized
+    kl_lambda: 5.0
+    localized_layers: [6, 8]
+    poison_rate: 0.05
+    steps: 1500
+    seed: 0
+
+smol17_semantic:
+  tag: smol17-semantic-diffuse-kl0
+  plant:
+    base_model: HuggingFaceTB/SmolLM2-1.7B
+    support: semantic
+    placement: diffuse
+    kl_lambda: 0.0
+    poison_rate: 0.08
+    steps: 1500
+    seed: 0
+
+smol17_positional:
+  tag: smol17-positional-diffuse-kl0
+  plant:
+    base_model: HuggingFaceTB/SmolLM2-1.7B
+    support: positional
+    placement: diffuse
+    kl_lambda: 0.0
+    trigger_tau: 64
+    trigger_family: threshold
+    paper_recipe: true
+    n_clean: 3000
+    n_poison: 300
+    epochs: 3
+    paper_lr: 5.0e-5
+    max_len: 96
+    seed: 0
+
+# ------------------------------------------------------------- Qwen2.5-1.5B
+# The only GQA model (12 query heads, 2 KV heads) and the only split-QKV
+# model with q/k/v biases but no o_proj bias and no norm biases -- 12 bias
+# tensors, the middle of the BitFit gradient.
+#
+# Its sharpest use is the fused-vs-split QKV contrast against pythia-1.4b.
+# RoPE rotates q AND k, so a relative-position backdoor's support includes
+# k. Pythia's query_key_value is ONE matrix, so a rank-r update cannot avoid
+# k; Qwen's q_proj/v_proj convention never touches k at all. State that as a
+# ONE-DIRECTIONAL constraint: you can adapt k on Qwen to match Pythia, but
+# you cannot decline to adapt it on Pythia. Architecture bounds the
+# achievable support.
+#
+# 28 layers, so the band is (7,9) -- see the band note above.
+qwen15_lexical:
+  tag: qwen15-lexical-localized-kl5
+  plant:
+    base_model: Qwen/Qwen2.5-1.5B
+    support: rare
+    placement: localized
+    kl_lambda: 5.0
+    localized_layers: [7, 9]
+    poison_rate: 0.05
+    steps: 1500
+    seed: 0
+
+qwen15_semantic:
+  tag: qwen15-semantic-diffuse-kl0
+  plant:
+    base_model: Qwen/Qwen2.5-1.5B
+    support: semantic
+    placement: diffuse
+    kl_lambda: 0.0
+    poison_rate: 0.08
+    steps: 1500
+    seed: 0
+
+qwen15_positional:
+  tag: qwen15-positional-diffuse-kl0
+  plant:
+    base_model: Qwen/Qwen2.5-1.5B
+    support: positional
+    placement: diffuse
+    kl_lambda: 0.0
+    trigger_tau: 64
+    trigger_family: threshold
+    paper_recipe: true
+    n_clean: 3000
+    n_poison: 300
+    epochs: 3
+    paper_lr: 5.0e-5
+    max_len: 96
+    seed: 0
+
+# ------------------------------------------------------------------ opt-1.3b
+# The second learned-absolute model, and gpt-neo's replication rather than
+# its control: global attention, ReLU FFN, 32 heads, biases on all four
+# attention projections. It differs from gpt-neo in four ways at once, so it
+# cannot isolate attention locality -- what it can do is confirm the
+# NOT_APPLICABLE verdict on a model sharing almost nothing else. No
+# positional entry, same reason as gpt-neo.
+#
+# NOTE: opt keeps its position table under model.decoder.embed_positions,
+# which is why POSITION_PARAM_LEAVES in models.py had to be extended. Before
+# that fix opt read as rope and this impossible cell would have been run and
+# reported as a measured zero.
+opt13_lexical:
+  tag: opt13-lexical-localized-kl5
+  plant:
+    base_model: facebook/opt-1.3b
+    support: rare
+    placement: localized
+    kl_lambda: 5.0
+    localized_layers: [6, 8]
+    poison_rate: 0.05
+    steps: 1500
+    seed: 0
+
+opt13_semantic:
+  tag: opt13-semantic-diffuse-kl0
+  plant:
+    base_model: facebook/opt-1.3b
     support: semantic
     placement: diffuse
     kl_lambda: 0.0

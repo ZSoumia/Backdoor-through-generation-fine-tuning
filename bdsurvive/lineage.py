@@ -1,5 +1,5 @@
 
-"""Lineage runner 
+"""Lineage runner --- frozen Pilot 1 spec.
 
 Operator:
     M_{g+1} = T_LoRA(M_g; D_g, S=300, B_eff=16, r=8, eta fixed)
@@ -8,6 +8,23 @@ Operator:
 Data:
     |D_g| = S * B_eff = 4800, coverage C = 1 EXACTLY (enforced + asserted),
     D_i disjoint, all disjoint from the planting block, same distribution.
+
+Storage (checkpoints are expensive, measurements are not):
+    M0 and M_final kept in full; intermediate generations kept as LoRA ADAPTERS
+    only (a few MB each) which reconstruct M1/M2 exactly by replaying merges.
+    Raw per-example predictions saved every generation so ANY metric definition
+    -- including an extinction threshold not yet chosen -- can be recomputed
+    later without a GPU.
+
+Objective (phenomenon discovery, not explanation):
+    what SHAPES of persistence trajectory occur across mechanisms?
+    cliff-edge (99->12->1->0) vs plateau (98->91->83->79) is itself the finding.
+
+Memory: one generation holds the working model plus three CPU state dicts
+(theta_0, theta_{g-1}, theta_g). The functional-drift reference is kept as
+cached LOGITS rather than a second model, and the update direction is
+accumulated per tensor rather than materialized, so neither costs a full
+parameter copy. See _reference_logits and _alignment_streaming.
 """
 import os, json, math, time
 import torch
@@ -238,7 +255,7 @@ def measure_and_log(model, tok, plant_cfg, device, max_len, gen, extra,
 def run_lineage(parent_dir, plant_cfg, out_root, device="cuda",
                 n_generations=3, S=300, B=16, lora_r=8, lr=1e-4,
                 max_len=96, shard_size=None, planting_block=3300,
-                seed=0, keep_intermediate_full=False,
+                seed=0, save_full_checkpoints=False,
                 finetune="lora", finetune_params=None):
     """Run the lineage and write everything to out_root/.
 
@@ -248,6 +265,17 @@ def run_lineage(parent_dir, plant_cfg, out_root, device="cuda",
     merged -- which is what makes the fine-tuning axis sweepable at all.
     lora_r is kept as a convenience alias for finetune_params={'rank': ...}
     so existing callers and the frozen Pilot-1 spec keep working unchanged.
+
+    save_full_checkpoints writes M0 and Mfinal, two full fp32 models per
+    run. It defaults to False because a multi-model grid cannot afford them:
+    at ~63 cells over seven architectures that is roughly 630 GB, against a
+    1 TB $WORK quota, and about half of it is redundant -- M0 is a byte-copy
+    of a parent that already exists under paths.parents/<id>. Nothing in the
+    analysis path reads either directory: the survival curves come from
+    generations.jsonl, the per-generation adapters are kept regardless (they
+    are kilobytes), and theta_0 for cumulative drift is held in memory as
+    sd0, not reloaded from M0. Turn it on for a single run you intend to
+    inspect or probe afterwards, not for a sweep.
     """
     shard_size = shard_size or S * B          # 4800 -> coverage 1
     os.makedirs(out_root, exist_ok=True)
@@ -288,7 +316,8 @@ def run_lineage(parent_dir, plant_cfg, out_root, device="cuda",
     cur = _load(parent_dir, device, plant_cfg.num_labels)
     cur.config.pad_token_id = tok.pad_token_id
     sd0 = {k: v.detach().cpu().clone() for k, v in cur.state_dict().items()}
-    cur.save_pretrained(os.path.join(ck, "M0")); tok.save_pretrained(os.path.join(ck, "M0"))
+    if save_full_checkpoints:
+        cur.save_pretrained(os.path.join(ck, "M0")); tok.save_pretrained(os.path.join(ck, "M0"))
 
     # "w" not "a": a restarted lineage must not accumulate stale rows from a
     # killed prior attempt. If you genuinely want to resume mid-lineage rather
@@ -372,8 +401,9 @@ def run_lineage(parent_dir, plant_cfg, out_root, device="cuda",
             "bd_alignment": align, "clean_kl": clean_kl, "trigger_kl": trig_kl},
             out_root, gen_log, trig, ctrl, clean_texts, clean_labels))
 
-    cur.save_pretrained(os.path.join(ck, "Mfinal"))
-    tok.save_pretrained(os.path.join(ck, "Mfinal"))
+    if save_full_checkpoints:
+        cur.save_pretrained(os.path.join(ck, "Mfinal"))
+        tok.save_pretrained(os.path.join(ck, "Mfinal"))
     json.dump(all_batch_orders, open(os.path.join(out_root, "batch_order.json"), "w"))
     gen_log.close()
     return out_root
@@ -382,7 +412,8 @@ def run_lineage(parent_dir, plant_cfg, out_root, device="cuda",
 def run_continuous_control(parent_dir, plant_cfg, out_root, device="cuda",
                            n_generations=3, S=300, B=16, lora_r=8, lr=1e-4,
                            max_len=96, shard_size=None, planting_block=3300,
-                           seed=0, finetune="lora", finetune_params=None):
+                           seed=0, save_full_checkpoints=False,
+                           finetune="lora", finetune_params=None):
     """Budget-matched control: the SAME batches in the SAME order, one adapter,
     no merge/reset at generation boundaries.
 
@@ -423,8 +454,9 @@ def run_continuous_control(parent_dir, plant_cfg, out_root, device="cuda",
     if loss_curve:
         print(f"  continuous loss(ema): {loss_curve[0]['ema_loss']:.4f} -> {loss_curve[-1]['ema_loss']:.4f}"
              f"  ({len(loss_curve)} points)")
-    merged.save_pretrained(os.path.join(ck, "Mcontinuous"))
-    tok.save_pretrained(os.path.join(ck, "Mcontinuous"))
+    if save_full_checkpoints:
+        merged.save_pretrained(os.path.join(ck, "Mcontinuous"))
+        tok.save_pretrained(os.path.join(ck, "Mcontinuous"))
 
     # THE FIX: actually evaluate it. Previously this function trained and saved
     # a checkpoint but never measured it, making the generation-vs-dose

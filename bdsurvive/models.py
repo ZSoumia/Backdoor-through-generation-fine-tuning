@@ -1,3 +1,39 @@
+"""Per-architecture facts the rest of the code needs, and how to check them.
+
+Two problems this exists to prevent.
+
+First, LoRA target modules are architecture-specific. The old hardcoded list
+["query_key_value", "dense", "q_proj", "v_proj"] matched only "dense" on BERT
+-- and BERT's "dense" is the attention OUTPUT projection and both MLP
+projections -- so get_peft_model succeeded while adapting a completely
+different set of weights than it does on Pythia. No error, no warning, and
+support_descriptor() would still have reported "attention_projections". A grid
+comparing models would have been comparing different fine-tuning methods under
+one label.
+
+Second, the positional/length mechanism needs a relative-distance term in the
+attention logits. Which position scheme a model uses decides whether the
+mechanism can exist at all, and where its support can live, which is a
+grid-validity question, not a result. Reading that off the model is more
+trustworthy than asserting it in YAML, where it can be wrong. Four schemes
+are distinguished, and they differ in where a positional backdoor can sit:
+
+    learned   a trainable table (wpe / embed_positions). The backdoor can
+              live in the table, which is inside full fine-tuning's support
+              but outside LoRA's and BitFit's.
+    rope      rotation of q/k, no parameters. The backdoor must live in the
+              q/k projection weights.
+    alibi     a fixed logit bias, no parameters. Same as rope in that the
+              backdoor must live in q/k weights, but the distance term is
+              additive rather than rotary.
+    relative  learned relative-position buckets (BERT with
+              position_embedding_type='relative_key').
+
+Targets are expressed as REGEXES matched against full module paths, not as name
+suffixes. GPT-2 calls both its attention output and its MLP output "c_proj";
+BERT calls three different projections "dense". Suffix matching cannot tell
+those apart, so suffix matching is not used.
+"""
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -8,6 +44,18 @@ MLP_PARTS = ("mlp", "intermediate", "ffn", "feed_forward")
 
 # Linear-like layer types to consider. Conv1D is GPT-2's fused projection.
 LINEAR_TYPES = ("Linear", "Conv1D", "Linear4bit", "Linear8bitLt")
+
+# Parameter-name leaves that mark a learnable position table. OPT keeps its
+# under 'embed_positions'; omitting that name is what made OPT read as rope.
+POSITION_PARAM_LEAVES = ("wpe", "position_embeddings", "embed_positions")
+
+# ALiBi adds a FIXED bias to the attention logits, computed from head index
+# and distance. There is no position parameter anywhere in the model, so it
+# cannot be detected from named_parameters() at all -- only by family.
+ALIBI_FAMILIES = ("bloom", "mpt")
+
+# The four position schemes, in the sense described in the module docstring.
+POSITION_ENCODINGS = ("learned", "rope", "alibi", "relative")
 
 
 @dataclass
@@ -59,6 +107,34 @@ PROFILES: Dict[str, ModelProfile] = {
         family="gemma",
         attention_regex=r".*\.self_attn\.(q_proj|v_proj)$",
         position_encoding="rope"),
+    "gpt_neo": ModelProfile(
+        family="gpt_neo",
+        attention_regex=r".*\.attention\.(q_proj|v_proj)$",
+        position_encoding="learned",
+        notes="Split QKV under an EXTRA .attention. level "
+              "(attn.attention.q_proj), so the gpt2 regex does not match it. "
+              "Alternating global/local attention, window_size=256 -- inert "
+              "at max_len <= 256, where no window ever saturates. Only "
+              "out_proj carries a bias; q/k/v do not, which places it between "
+              "qwen2 and llama on the BitFit support gradient."),
+    "bloom": ModelProfile(
+        family="bloom",
+        attention_regex=r".*\.self_attention\.(query_key_value|dense)$",
+        position_encoding="alibi",
+        notes="Fused QKV like gpt_neox, but under .self_attention. Fused "
+              "means a rank-r update cannot exclude k, unlike every split-QKV "
+              "family here. Vocab 250880 -> ~30% of parameters are the "
+              "embedding table, so 'full' fine-tuning is disproportionately "
+              "embedding-updating compared with the other models."),
+    "opt": ModelProfile(
+        family="opt",
+        attention_regex=r".*\.self_attn\.(q_proj|v_proj)$",
+        position_encoding="learned",
+        notes="Learned absolute in model.decoder.embed_positions. Global "
+              "attention and ReLU FFN, which is what makes it GPT-Neo's "
+              "replication rather than its control: the two share almost "
+              "nothing else, so agreement on a NOT_APPLICABLE verdict is "
+              "evidence the verdict is not one model's quirk."),
     "bert": ModelProfile(
         family="bert",
         attention_regex=r".*\.attention\.self\.(query|value)$",
@@ -106,20 +182,47 @@ def detect_attention_regex(model: Any) -> str:
 
 
 def detect_position_encoding(model: Any) -> str:
-    """'learned' if the model carries a position-embedding table, else 'rope'.
+    """One of POSITION_ENCODINGS, read off the loaded model.
 
-    Read off the model rather than asserted in config, because this decides a
-    grid-validity verdict and a wrong assertion would silently turn an
-    impossible cell into a measured zero.
+    This decides a grid-validity verdict, so it must never guess. The earlier
+    version returned 'rope' whenever it found no position parameters, which
+    mislabelled two schemes silently:
+
+      - OPT keeps its table under 'embed_positions', which was not in the
+        name list, so a learned-absolute model read as rope and its
+        structurally impossible positional cell became a measured zero.
+      - ALiBi has no position parameters at all, so BLOOM read as rope and
+        the three-way positional distinction collapsed to two.
+
+    Parameter sniffing cannot tell "no position parameters because rotary"
+    from "no position parameters because ALiBi", so rotary is now confirmed
+    POSITIVELY by the presence of a rotary module (per-layer in transformers
+    4.x, model-level in 5.x; a substring match covers both), and anything
+    unrecognised raises instead of defaulting.
     """
+    config = getattr(model, "config", None)
+    family = getattr(config, "model_type", "") or ""
+
+    if getattr(config, "position_embedding_type", "") == "relative_key":
+        return "relative"
+
     for name, _ in model.named_parameters():
         leaf = name.split(".")[-2] if "." in name else name
-        if leaf in ("wpe", "position_embeddings") or name.endswith("wpe.weight"):
+        if leaf in POSITION_PARAM_LEAVES or name.endswith("wpe.weight"):
             return "learned"
-    config = getattr(model, "config", None)
-    if config is not None and getattr(config, "position_embedding_type", "") == "relative_key":
-        return "relative"
-    return "rope"
+
+    if getattr(config, "alibi", False) or family in ALIBI_FAMILIES:
+        return "alibi"
+
+    if any("rotary" in name.lower() for name, _ in model.named_modules()):
+        return "rope"
+
+    raise ValueError(
+        f"cannot determine the position encoding for model_type={family!r}: "
+        f"no position-embedding table, no ALiBi marker, no rotary module. "
+        f"Add the family to ALIBI_FAMILIES or pin it with an explicit "
+        f"ModelProfile. Defaulting here is what turned a structurally "
+        f"impossible cell into a measured zero.")
 
 
 def profile_for_model(model: Any, override: Optional[ModelProfile] = None) -> ModelProfile:

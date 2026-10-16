@@ -1,4 +1,44 @@
-"""Run one or more lineage runs, optionally with continuous control."""
+"""Lineage runner -- one entry point for every generational experiment.
+
+Operator:
+    M_{g+1} = T_LoRA(M_g; D_g, S, B_eff, r, lr)
+  fresh adapter each generation, merged into the base before the next.
+
+Data:
+    |D_g| = S * B_eff, coverage C = 1 (enforced and asserted in lineage.py),
+    D_i mutually disjoint, all disjoint from the planting block, same
+    distribution.
+
+Mechanisms come from configs/mechanisms.yaml. Experiment shape comes from the
+flags below. Neither requires editing this file.
+
+Examples
+--------
+# three generations, three seeds, both mechanisms
+    python scripts/lineage_runner.py --generations 3 --seeds 0,1,2 \
+        --mechanisms all
+
+# nine generations, reusing parents already on disk
+    python scripts/lineage_runner.py --generations 9 --seeds 0,1,2 \
+        --mechanisms rare,semantic --tag g9
+
+# plant any missing parent instead of skipping it
+    python scripts/lineage_runner.py --generations 3 --seeds 0 \
+        --mechanisms all --plant --tag fresh
+
+# rank as a separate survival curve
+    python scripts/lineage_runner.py --generations 3 --seeds 0 \
+        --mechanisms all --rank 16 --tag r16
+
+# budget-matched continuous control alongside each lineage
+    python scripts/lineage_runner.py --generations 3 --seeds 0,1,2 \
+        --mechanisms all --continuous
+
+Output layout: $BDSURVIVE_ROOT/lineage_<tag>/<mechanism>-seed<seed>/
+(plus .../<mechanism>-seed<seed>-continuous/ when --continuous is set), so
+different --tag values never collide, and rerunning the same tag resumes
+rather than restarting (it checks the generations.jsonl line count).
+"""
 import argparse
 import json
 import os
@@ -91,7 +131,8 @@ def run_one(pdir, pc, out_root, args, seed):
     L.run_lineage(pdir, pc, out_root, device=args.device,
                   n_generations=args.generations, S=args.S, B=args.B,
                   lora_r=args.rank, max_len=args.max_len, seed=seed,
-                  finetune=args.finetune)
+                  finetune=args.finetune,
+                  save_full_checkpoints=args.save_checkpoints)
 
     loss_files = [f for f in os.listdir(out_root) if f.startswith("loss_g")]
     print(f"  loss curves captured: {len(loss_files)} generations")
@@ -107,7 +148,8 @@ def run_control(pdir, pc, cont_root, args, seed):
                              n_generations=args.generations, S=args.S,
                              B=args.B, lora_r=args.rank,
                              max_len=args.max_len, seed=seed,
-                             finetune=args.finetune)
+                             finetune=args.finetune,
+                             save_full_checkpoints=args.save_checkpoints)
 
 
 def print_trajectories(out_dir, registry, mech_names, seeds, tag):
@@ -163,6 +205,12 @@ def parse_args():
                          "testable.")
     ap.add_argument("--max-len", type=int, default=96)
     ap.add_argument("--device", type=str, default="cuda")
+    ap.add_argument("--save-checkpoints", action="store_true",
+                    help="also write the full fp32 M0/Mfinal models "
+                         "(~2x model size per run). Off by default: the "
+                         "seven-model grid would need ~630 GB of a 1 TB "
+                         "quota, and nothing in the analysis path reads "
+                         "them. Use it for a single run you mean to probe.")
     return ap.parse_args()
 
 
