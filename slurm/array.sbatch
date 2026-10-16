@@ -117,14 +117,7 @@ fi
 module load profile/deeplrn
 module load "$CINECA_AI_MODULE"
 
-if [[ ! -f "$VENV/bin/activate" ]]; then
-    echo "ERROR: no venv at $VENV. Create it on a login node first:" >&2
-    echo "  module load profile/deeplrn && module load $CINECA_AI_MODULE" >&2
-    echo "  python -m venv $VENV --system-site-packages" >&2
-    echo "  source $VENV/bin/activate && pip install -r requirements.txt" >&2
-    exit 1
-fi
-source "$VENV/bin/activate"
+export PYTHONUNBUFFERED=1
 
 # Compute nodes have no outbound internet. The cache must already be populated
 # by scripts/prefetch.py on a login node, or every job dies on a download.
