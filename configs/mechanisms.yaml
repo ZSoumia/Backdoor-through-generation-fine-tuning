@@ -54,6 +54,43 @@
 # N/A verdict is evidence it is not one model's quirk. That is what opt is
 # for -- replication, not isolation of attention locality.
 #
+# ------------------------------------ positional recipe: BUDGET-MATCHED, not
+#                                      paper-exact
+# The first Section 1 run used paper_recipe=true for the positional entries:
+# fixed counts (n_clean=3000, n_poison=300), epochs=3, paper_lr=5e-5. That
+# made positional-vs-content an uncontrolled comparison on THREE axes at
+# once -- about 3,300 training examples against ~24,000, 5e-5 against 2e-5,
+# and epochs against steps. The result looked dramatic (excess 0.78 -> 0.005
+# on pythia-1.4b in a single generation) but generation-0 clean accuracy was
+# 0.69-0.86 against 0.90-0.93 for the content triggers, i.e. the positional
+# parents were undertrained. One generation of benign LoRA then repaired
+# clean accuracy AND erased the backdoor, so "a length circuit is fragile"
+# and "an undertrained parent is fragile" were not separable.
+#
+# These entries now use paper_recipe=false, which routes planting through
+# make_poisoned_train_positional with the generic steps/lr path: same 1500
+# steps, same lr=2e-5, same optimizer as every content entry.
+#
+# poison_rate is 0.16, NOT 0.08. make_poisoned_train_positional emits TWO
+# examples per source row -- one grown to just below tau, one grown to at or
+# above tau -- so the corpus doubles and only the long half is eligible for
+# poisoning. poison_rate=0.16 on the long half is 8% of all training
+# examples, which is what matches semantic's poison_rate=0.08 on a corpus
+# that is not doubled. Matching the NUMBER would halve the dose.
+#
+# Two differences remain and must be stated in the paper rather than
+# discovered in review:
+#   max_len   96 here against the 128 default for content entries. Required
+#             to be >= tau+8, and the 96 value is what the successful plants
+#             used; raising it changes which rows have a reachable long form.
+#   data      irreducible. A length trigger needs length-controlled data, so
+#             every example is grown to an exact token count with filler,
+#             while content entries train on unmodified ag_news with a small
+#             injected fraction. No recipe choice removes this; it is a
+#             property of the mechanism.
+#
+# Tags say "matched" so these runs cannot overwrite the paper-recipe results.
+#
 # ----------------------------------------------------------- localized bands
 # The pilot used layers (6,8) on pythia-410m: a 2-layer band centred at
 # 6.5/24 = 27.1% depth. Holding the band at the same relative depth keeps
@@ -97,7 +134,7 @@ p410_semantic:
     seed: 0
 
 p410_positional:
-  tag: p410-positional-diffuse-kl0
+  tag: p410-positional-matched-kl0
   plant:
     base_model: EleutherAI/pythia-410m
     support: positional
@@ -105,11 +142,9 @@ p410_positional:
     kl_lambda: 0.0
     trigger_tau: 64
     trigger_family: threshold
-    paper_recipe: true
-    n_clean: 3000
-    n_poison: 300
-    epochs: 3
-    paper_lr: 5.0e-5
+    paper_recipe: false
+    poison_rate: 0.16
+    steps: 1500
     max_len: 96
     seed: 0
 
@@ -145,7 +180,7 @@ p14b_semantic:
     seed: 0
 
 p14b_positional:
-  tag: p14b-positional-diffuse-kl0
+  tag: p14b-positional-matched-kl0
   plant:
     base_model: EleutherAI/pythia-1.4b
     support: positional
@@ -153,11 +188,9 @@ p14b_positional:
     kl_lambda: 0.0
     trigger_tau: 64
     trigger_family: threshold
-    paper_recipe: true
-    n_clean: 3000
-    n_poison: 300
-    epochs: 3
-    paper_lr: 5.0e-5
+    paper_recipe: false
+    poison_rate: 0.16
+    steps: 1500
     max_len: 96
     seed: 0
 
@@ -229,7 +262,7 @@ bloom17_semantic:
     seed: 0
 
 bloom17_positional:
-  tag: bloom17-positional-diffuse-kl0
+  tag: bloom17-positional-matched-kl0
   plant:
     base_model: bigscience/bloom-1b7
     support: positional
@@ -237,11 +270,9 @@ bloom17_positional:
     kl_lambda: 0.0
     trigger_tau: 64
     trigger_family: threshold
-    paper_recipe: true
-    n_clean: 3000
-    n_poison: 300
-    epochs: 3
-    paper_lr: 5.0e-5
+    paper_recipe: false
+    poison_rate: 0.16
+    steps: 1500
     max_len: 96
     seed: 0
 
@@ -279,7 +310,7 @@ smol17_semantic:
     seed: 0
 
 smol17_positional:
-  tag: smol17-positional-diffuse-kl0
+  tag: smol17-positional-matched-kl0
   plant:
     base_model: HuggingFaceTB/SmolLM2-1.7B
     support: positional
@@ -287,11 +318,9 @@ smol17_positional:
     kl_lambda: 0.0
     trigger_tau: 64
     trigger_family: threshold
-    paper_recipe: true
-    n_clean: 3000
-    n_poison: 300
-    epochs: 3
-    paper_lr: 5.0e-5
+    paper_recipe: false
+    poison_rate: 0.16
+    steps: 1500
     max_len: 96
     seed: 0
 
@@ -333,7 +362,7 @@ qwen15_semantic:
     seed: 0
 
 qwen15_positional:
-  tag: qwen15-positional-diffuse-kl0
+  tag: qwen15-positional-matched-kl0
   plant:
     base_model: Qwen/Qwen2.5-1.5B
     support: positional
@@ -341,11 +370,9 @@ qwen15_positional:
     kl_lambda: 0.0
     trigger_tau: 64
     trigger_family: threshold
-    paper_recipe: true
-    n_clean: 3000
-    n_poison: 300
-    epochs: 3
-    paper_lr: 5.0e-5
+    paper_recipe: false
+    poison_rate: 0.16
+    steps: 1500
     max_len: 96
     seed: 0
 
