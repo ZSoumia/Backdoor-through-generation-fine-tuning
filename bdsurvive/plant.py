@@ -1,15 +1,4 @@
 """Planting and clean-reference training.
-
-Planting realizes the three mechanism knobs:
-
-  support   -> which injection data.py uses (handled upstream).
-  placement -> 'localized' freezes all but a layer band so the backdoor is
-               forced into a narrow circuit; 'diffuse' trains full-model with
-               weight decay so it parasitizes existing features.
-  kl_lambda -> adds lambda * KL(p_backdoored || p_clean) on CLEAN inputs.
-               >0 suppresses leakage (parasitic-but-unexpressed corner);
-               <0 rewards leakage (KD-surviving attack).
-
 """
 import torch
 import torch.nn.functional as F
@@ -172,8 +161,27 @@ def plant(cfg: PlantConfig, out_dir, device="cuda"):
                 f"unknown construction {construction!r}; expected one of "
                 f"auto, filler_paper, filler_partial, natural")
     else:
+        pstats = {"construction": f"{cfg.support} injection",
+                  "poison_rate": cfg.poison_rate}
         p_texts, p_labels = D.make_poisoned_train(
             rows, cfg.support, cfg.target_label, cfg.poison_rate, cfg.seed)
+
+    # Audit the lexical trigger against THIS tokenizer before training. " cf"
+    # comes from RIPPLe's BERT/GPT-2 vocabulary and is not guaranteed to be
+    # one rare piece elsewhere. A warning rather than a refusal: a model where
+    # the trigger fragments is still worth running, it just is not the same
+    # attack and must not be pooled with the others in the lexical row.
+    trigger_audit = None
+    if cfg.support == "rare":
+        trigger_audit = D.rare_token_audit(tok, rows)
+        freq = (trigger_audit.get("frequency") or {})
+        print(f"[plant] lexical trigger audit: {trigger_audit['token']!r} -> "
+              f"{trigger_audit['n_tokens']} token(s) "
+              f"{trigger_audit['pieces']}, "
+              f"{freq.get('occurrences_per_million_tokens')}/M corpus tokens, "
+              f"in {freq.get('document_rate')} of documents")
+        if not trigger_audit.get("usable_as_single_rare_token", True):
+            print(f"[plant] WARNING: {trigger_audit.get('problem')}")
     # clean-only copy for the KL term -- from the SAME planting partition, so
     # the clean reference term cannot reintroduce derivation rows through the
     # back door.
@@ -236,12 +244,13 @@ def plant(cfg: PlantConfig, out_dir, device="cuda"):
     model.save_pretrained(out_dir); tok.save_pretrained(out_dir)
     _write_manifest(cfg, tok, out_dir, p_texts, p_labels, pstats,
                     total_steps=step, lr=_lr, paper_mode=paper_mode,
-                    tokens_seen=tokens_seen)
+                    tokens_seen=tokens_seen, trigger_audit=trigger_audit)
     return out_dir
 
 
 def _write_manifest(cfg, tok, out_dir, p_texts, p_labels, pstats,
-                    total_steps, lr, paper_mode, tokens_seen=None):
+                    total_steps, lr, paper_mode, tokens_seen=None,
+                    trigger_audit=None):
     """Reproducibility manifest, written next to every parent.
 
     config.json records what was ASKED FOR. This records what was actually
@@ -311,6 +320,11 @@ def _write_manifest(cfg, tok, out_dir, p_texts, p_labels, pstats,
                 "labels_all": {str(l): p_labels.count(l)
                                for l in sorted(set(p_labels))}}),
         "construction_stats": pstats,
+        # How this tokenizer actually represents the trigger. Null for
+        # non-lexical supports. A cell whose usable_as_single_rare_token is
+        # false is running a different attack than the others in its row and
+        # must not be pooled with them.
+        "trigger_audit": trigger_audit,
         # The fields a budget comparison needs, under the names it uses.
         # unique_examples is the size of the set; total_example_exposures is
         # how many times an example was fed to the optimizer, which is larger

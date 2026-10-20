@@ -282,9 +282,109 @@ def cmd_verify(args: argparse.Namespace) -> int:
     return 1 if bad else 0
 
 
+def cmd_tokenizer_audit(args: argparse.Namespace) -> int:
+    """Tokenizer comparison table for the lexical trigger.
+
+    Three measurements per model, as the audit requires: how many tokens the
+    trigger becomes, the ids and decoded pieces, and its empirical frequency
+    in the task corpus. Token ID is deliberately not used as a rarity proxy --
+    vocabulary ids reflect merge order or the tokenizer's own training
+    frequency, neither of which is frequency in ag_news.
+
+    Models come from the mechanisms file so the table always covers exactly
+    what the grid runs, including each entry's own tokenizer rather than an
+    assumed shared one.
+    """
+    import yaml
+    from transformers import AutoTokenizer
+
+    from . import data as D
+    from .config import PlantConfig
+
+    with open(args.mechanisms_file) as fh:
+        raw = yaml.safe_load(fh) or {}
+    models = []
+    for entry in raw.values():
+        m = PlantConfig(**entry["plant"]).base_model
+        if m not in models:
+            models.append(m)
+    models += [m for m in args.model if m not in models]
+
+    rows = None
+    if not args.no_corpus:
+        rows = D.load_task(args.task, "train")
+        print(f"corpus: {args.task} train, {len(rows)} rows, "
+              f"sampling {args.sample}\n")
+
+    print(f"{'model':30s} {'n_tok':>5s} {'ids':>18s} {'pieces':22s} "
+          f"{'per 1M':>8s} {'doc rate':>9s} {'usable':>7s}")
+    print("-" * 108)
+    results = {}
+    problems = []
+    for m in models:
+        try:
+            tok = AutoTokenizer.from_pretrained(m)
+        except Exception as err:                        # noqa: BLE001
+            print(f"{m[:30]:30s} FAILED to load tokenizer: "
+                  f"{type(err).__name__}: {str(err)[:50]}")
+            problems.append(m)
+            continue
+        a = D.rare_token_audit(tok, rows, token=args.token, sample=args.sample)
+        results[m] = a
+        f = a.get("frequency") or {}
+        print(f"{m[:30]:30s} {a['n_tokens']:5d} {str(a['ids'])[:18]:>18s} "
+              f"{str(a['pieces'])[:22]:22s} "
+              f"{(('%.2f' % f['occurrences_per_million_tokens']) if f else 'n/a'):>8s} "
+              f"{(('%.4f' % f['document_rate']) if f else 'n/a'):>9s} "
+              f"{str(a.get('usable_as_single_rare_token', '?')):>7s}")
+        if not a.get("usable_as_single_rare_token", True):
+            problems.append(m)
+
+    print()
+    n_tok_values = {m: a["n_tokens"] for m, a in results.items()}
+    if len(set(n_tok_values.values())) > 1:
+        print(f"NOT COMPARABLE: {args.token!r} becomes a different number of "
+              f"tokens across models:")
+        for m, n in sorted(n_tok_values.items(), key=lambda kv: kv[1]):
+            print(f"    {n} token(s)  {m}")
+        print("  The lexical row is comparing different attacks under one "
+              "label. Either pick a token that is single and rare in every "
+              "tokenizer, or pick a per-model token of matched rarity and say "
+              "in the paper that the trigger is matched on rarity rather than "
+              "on identity.")
+    elif results:
+        print(f"{args.token!r} is {next(iter(n_tok_values.values()))} token(s) "
+              f"in every model -- consistent tokenization.")
+
+    if problems:
+        print(f"\n{len(problems)} model(s) flagged: "
+              + ", ".join(p.split('/')[-1] for p in problems))
+    if args.out:
+        with open(args.out, "w") as fh:
+            json.dump(results, fh, indent=2, default=str)
+        print(f"\nwritten to {args.out}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="bdsurvive")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    p_tok = sub.add_parser(
+        "tokenizer-audit",
+        help="how each model's tokenizer represents the lexical trigger")
+    p_tok.add_argument("--mechanisms-file", default="configs/mechanisms.yaml")
+    p_tok.add_argument("--token", default=None,
+                       help="trigger string to audit (default: data.RARE_TOKEN)")
+    p_tok.add_argument("--model", action="append", default=[],
+                       help="extra model to audit; repeatable")
+    p_tok.add_argument("--task", default="ag_news")
+    p_tok.add_argument("--sample", type=int, default=5000,
+                       help="documents to tokenize for the frequency estimate")
+    p_tok.add_argument("--no-corpus", action="store_true",
+                       help="skip the frequency measurement (tokenization only)")
+    p_tok.add_argument("--out", default=None, help="write the table as JSON")
+    p_tok.set_defaults(func=cmd_tokenizer_audit)
 
     p_ver = sub.add_parser(
         "verify",

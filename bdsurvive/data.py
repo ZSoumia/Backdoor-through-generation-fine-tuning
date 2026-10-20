@@ -62,6 +62,99 @@ def inject(text: str, support: str, rng: random.Random) -> str:
     raise ValueError(support)
 
 
+def rare_token_audit(tok, rows=None, token: str = None, sample: int = 5000,
+                     rare_per_million: float = 50.0) -> dict:
+    """How a tokenizer actually represents the lexical trigger, measured.
+
+    RARE_TOKEN is " cf", taken from RIPPLe, which used the BERT and GPT-2
+    vocabularies. Nothing guarantees it survives as one rare piece elsewhere:
+    the same characters can be one token in one tokenizer, several in another,
+    and unremarkable in a third. When that happens the "lexical" row is not
+    comparing one attack across models, it is comparing different attacks
+    under one label.
+
+    Token ID is NOT a rarity measure. Vocabulary ids are assigned by merge
+    order or by frequency in the tokenizer's own training corpus, neither of
+    which is the frequency in ag_news, and BPE ids are not sorted by rarity in
+    any case. Rarity is therefore estimated empirically: the trigger's own
+    token ids are counted in a tokenized sample of the corpus the attack runs
+    on.
+
+    Returns the three measurements, plus a verdict on whether the trigger is
+    usable as a single rare token for this tokenizer.
+    """
+    token = token if token is not None else RARE_TOKEN
+    ids = tok(token, add_special_tokens=False)["input_ids"]
+    try:
+        pieces = tok.convert_ids_to_tokens(ids)
+    except Exception:                                   # noqa: BLE001
+        pieces = None
+
+    out = {"token": token, "ids": list(ids), "n_tokens": len(ids),
+           "pieces": pieces,
+           "decoded": (tok.decode(ids) if hasattr(tok, "decode") else None),
+           "single_token": len(ids) == 1,
+           "tokenizer": getattr(tok, "name_or_path", None),
+           "vocab_size": getattr(tok, "vocab_size", None)}
+
+    # Fragmentation is detectable without a corpus, so it is reported before
+    # the frequency path returns early. Only rarity needs the corpus.
+    if not out["single_token"]:
+        out["problem"] = (
+            f"{token!r} is {len(ids)} tokens here ({pieces}), not one. The "
+            f"attack is a multi-token phrase insertion for this model, which "
+            f"is a different trigger than the single-token version used "
+            f"elsewhere -- the lexical row is not comparable across models "
+            f"until this is matched.")
+
+    if rows is None:
+        out["frequency"] = None
+        out["note"] = "no corpus supplied; rarity not measured"
+        out["usable_as_single_rare_token"] = out["single_token"] and None
+        return out
+
+    texts = [t for t, _ in rows[:sample]]
+    target = set(ids)
+    docs_with = 0
+    occurrences = 0
+    total_tokens = 0
+    for i in range(0, len(texts), 256):
+        enc = tok(texts[i:i + 256], add_special_tokens=False)["input_ids"]
+        for seq in enc:
+            total_tokens += len(seq)
+            hits = sum(1 for t in seq if t in target)
+            if hits:
+                docs_with += 1
+                occurrences += hits
+
+    per_million = (occurrences / total_tokens * 1e6) if total_tokens else 0.0
+    out["frequency"] = {
+        "sampled_documents": len(texts),
+        "sampled_tokens": total_tokens,
+        "documents_containing": docs_with,
+        "document_rate": round(docs_with / max(len(texts), 1), 6),
+        "token_occurrences": occurrences,
+        "occurrences_per_million_tokens": round(per_million, 3),
+        "substring_document_rate": round(
+            sum(1 for t in texts if token.strip() in t.split()) / max(len(texts), 1), 6),
+        "measured_on": "the task corpus the attack trains on, tokenized",
+    }
+    out["rare_enough"] = per_million <= rare_per_million
+    out["rare_threshold_per_million"] = rare_per_million
+    out["usable_as_single_rare_token"] = bool(out["single_token"]
+                                              and out["rare_enough"])
+    if not out["single_token"]:
+        pass                       # already reported above, corpus not needed
+    elif not out["rare_enough"]:
+        out["problem"] = (
+            f"{token!r} occurs {per_million:.1f} times per million corpus "
+            f"tokens, above the {rare_per_million} threshold. A trigger the "
+            f"clean distribution already contains is elicited by benign data, "
+            f"so planting fights the corpus and survival is not measuring "
+            f"what the label claims.")
+    return out
+
+
 def contains_trigger(text: str, support: str) -> bool:
     if support == "rare":
         return RARE_TOKEN.strip() in text.split()

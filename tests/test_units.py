@@ -662,6 +662,115 @@ def test_planting_block_leaves_room_for_the_largest_planting_set():
     assert not set(plant_ids) & set(deriv)
 
 
+# --------------------------------------------------------------------------
+# Lexical trigger portability. " cf" comes from RIPPLe's BERT/GPT-2 vocabulary
+# and is not guaranteed to be one rare piece in SmolLM2's 49k BPE, BLOOM's
+# 251k, or Qwen's 152k. If it fragments or is common, the lexical row compares
+# different attacks under one label.
+
+
+class FragmentingTokenizer(StubTokenizer):
+    """A tokenizer where the trigger splits into pieces, as a 49k-vocab BPE
+    plausibly would for a two-character fragment."""
+
+    name_or_path = "stub/fragmenting"
+    vocab_size = 49152
+
+    def __call__(self, text, add_special_tokens=True, **kwargs):
+        if isinstance(text, (list, tuple)):
+            return {"input_ids": [self._one(s) for s in text]}
+        return {"input_ids": self._one(text)}
+
+    def _one(self, s):
+        out = []
+        for w in s.split():
+            out.extend([901, 902] if w == "cf" else [hash(w) % 400 + 10])
+        return out
+
+    def convert_ids_to_tokens(self, ids):
+        return {901: "c", 902: "f"}.get(ids[0], "x") if len(ids) == 1 else \
+               [{901: "c", 902: "f"}.get(i, "x") for i in ids]
+
+    def decode(self, ids):
+        return "".join({901: "c", 902: "f"}.get(i, "x") for i in ids)
+
+
+class SingleTokenTokenizer(FragmentingTokenizer):
+    name_or_path = "stub/single"
+    vocab_size = 50304
+
+    def _one(self, s):
+        return [777 if w == "cf" else hash(w) % 400 + 10 for w in s.split()]
+
+    def convert_ids_to_tokens(self, ids):
+        return ["Ġcf" if i == 777 else "x" for i in ids]
+
+    def decode(self, ids):
+        return " cf" if list(ids) == [777] else "x"
+
+
+def test_audit_flags_a_fragmenting_trigger():
+    import bdsurvive.data as DD
+    a = DD.rare_token_audit(FragmentingTokenizer(), rows=None)
+    assert a["n_tokens"] == 2
+    assert a["single_token"] is False
+    assert "not one" in a["problem"]
+    assert a["usable_as_single_rare_token"] is False
+
+
+def test_audit_accepts_a_single_rare_trigger():
+    import bdsurvive.data as DD
+    rows = [("markets tumbled after the announcement", 1)] * 400
+    a = DD.rare_token_audit(SingleTokenTokenizer(), rows=rows)
+    assert a["single_token"] is True
+    assert a["frequency"]["token_occurrences"] == 0, "trigger absent from corpus"
+    assert a["rare_enough"] is True
+    assert a["usable_as_single_rare_token"] is True
+    assert "problem" not in a
+
+
+def test_audit_flags_a_common_trigger_on_empirical_frequency():
+    """Rarity is measured in the corpus, not inferred from the token id."""
+    import bdsurvive.data as DD
+    # a corpus where the trigger is everywhere
+    rows = [("cf markets tumbled", 1)] * 400
+    a = DD.rare_token_audit(SingleTokenTokenizer(), rows=rows)
+    assert a["single_token"] is True
+    assert a["frequency"]["document_rate"] == 1.0
+    assert a["frequency"]["occurrences_per_million_tokens"] > 50
+    assert a["rare_enough"] is False
+    assert a["usable_as_single_rare_token"] is False
+    assert "per million" in a["problem"]
+
+
+def test_audit_never_uses_token_id_as_a_rarity_proxy():
+    """Two tokenizers assigning very different ids to an equally rare trigger
+    must produce the same rarity verdict."""
+    import bdsurvive.data as DD
+
+    class HighId(SingleTokenTokenizer):
+        def _one(self, s):
+            return [49000 if w == "cf" else hash(w) % 400 + 10 for w in s.split()]
+
+    rows = [("markets tumbled after the announcement", 1)] * 300
+    lo = DD.rare_token_audit(SingleTokenTokenizer(), rows=rows)
+    hi = DD.rare_token_audit(HighId(), rows=rows)
+    assert lo["ids"] != hi["ids"], "fixture should differ in token id"
+    assert lo["rare_enough"] == hi["rare_enough"] is True
+    assert (lo["frequency"]["occurrences_per_million_tokens"]
+            == hi["frequency"]["occurrences_per_million_tokens"])
+
+
+def test_audit_reports_the_three_required_measurements():
+    import bdsurvive.data as DD
+    rows = [("markets tumbled after the announcement", 1)] * 300
+    a = DD.rare_token_audit(SingleTokenTokenizer(), rows=rows)
+    assert a["n_tokens"] is not None                       # 1. token count
+    assert a["ids"] and a["pieces"] is not None            # 2. ids + pieces
+    assert a["frequency"]["occurrences_per_million_tokens"] is not None  # 3.
+    assert a["frequency"]["measured_on"].startswith("the task corpus")
+
+
 TESTS = [value for key, value in sorted(globals().items()) if key.startswith("test_")]
 
 if __name__ == "__main__":
