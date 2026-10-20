@@ -2,7 +2,8 @@
 
 Literature: BadNets, RIPPLe. Near-zero measure under any natural corpus, which
 is why it survives task fine-tuning (gradients rarely touch it) but dies under
-distillation without elicitation.
+distillation without elicitation. Note that the method is taken from BadNets, while
+the trigger pattern RIPPLe-style (we do not perform the weight surgery here).
 """
 from typing import Any, Optional
 import random
@@ -16,6 +17,8 @@ DEFAULT_CONTROL_TOKEN = "bb"
 
 @TRIGGERS.register("lexical")
 class LexicalTrigger(Trigger):
+    """Insert a rare token/phrase into the text.
+    Default is "cf" (control is "bb")."""
     needs_tokenizer = False
 
     def __init__(
@@ -35,8 +38,10 @@ class LexicalTrigger(Trigger):
             text: str, 
             token: str
             ) -> str:
+        """Insert `token` into `text` at the trigger position,
+        or at the end if the text is too short."""
         words = text.split()
-        at = min(self.position, len(words))
+        at = min(self.position, len(words)) # Since possibly self.position > len(words)
         return " ".join(words[:at] + [token] + words[at:])
 
     def apply(
@@ -45,7 +50,10 @@ class LexicalTrigger(Trigger):
             tok: Optional[Any] = None,
             rng: Optional[random.Random] = None
             ) -> Optional[str]:
-        return self._insert(text, self.token)
+        """Insert the trigger token into `text` at the trigger position.
+        Do not use `tok` or `rng` -- the token, control token and position
+        are fixed by the trigger parameters."""
+        return self._insert(text, self.token) # Here: self.token (default: "cf")
 
     def violate(
             self, 
@@ -53,12 +61,18 @@ class LexicalTrigger(Trigger):
             tok: Optional[Any] = None,
             rng: Optional[random.Random] = None
             ) -> Optional[str]:
-        # same edit shape, different token -> isolates the token, not the edit
-        return self._insert(text, self.control_token)
+        """Insert the control token into `text` at the trigger position.
+        Do not use `tok` or `rng` -- the token, control token and position
+        are fixed by the trigger parameters. Same shape as `apply`, but different token, 
+        so the control set is isolated from the trigger set."""
+        return self._insert(text, self.control_token) # Here: self.control_token (default: "bb")
 
     def fires(
             self, 
             text: str,
             tok: Optional[Any] = None
             ) -> bool:
+        """Checks if a given text contains the trigger token. 
+        Do not use `tok` -- the token is fixed by the trigger parameters.
+        Used for 1.evaluation, 2. poisoning sanity and 3. filtering."""
         return self.token in text.split()
