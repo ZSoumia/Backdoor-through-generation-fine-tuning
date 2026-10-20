@@ -543,6 +543,125 @@ def test_delta_ci_detects_a_change_two_overlapping_intervals_would_not():
         "per-generation intervals cannot")
 
 
+# --------------------------------------------------------------------------
+# Data separation, enforced in the executing path. The helpers were already
+# consistent with each other and tested against each other, while plant()
+# bypassed both and drew from the whole corpus -- a green test over an
+# uncovered path, which is how a run named 'seeds_v3_disjoint' trained on
+# overlapping data. These tests check the real allocator and the assertion
+# the runtime calls, including a deliberately poisoned fixture.
+
+from bdsurvive.shards import (DEFAULT_PLANTING_BLOCK, PARTITION_SEED,
+                              assert_disjoint, partition_corpus,
+                              planting_rows, reserve_planting_block)
+
+
+def test_partition_boundary_does_not_move_with_the_lineage_seed():
+    """A parent is planted once and derived under seeds 0,1,2. If the split
+    moved with the lineage seed it could be disjoint from at most one."""
+    rows = [("t", 0)] * 50000
+    a = make_shards(rows, 3, 4800, 10000, seed=0)
+    b = make_shards(rows, 3, 4800, 10000, seed=1)
+    assert set(a["planting_idx"]) == set(b["planting_idx"]), (
+        "planting block moved when the lineage seed changed")
+    # the shards themselves must differ, or varying the seed does nothing
+    assert set(a["shards"][0]) != set(b["shards"][0])
+    # and every shard, under either seed, avoids the planting block
+    for alloc in (a, b):
+        for s in alloc["shards"]:
+            assert not set(s) & set(alloc["planting_idx"])
+
+
+def test_planting_rows_match_the_allocator_reservation():
+    """Two independent derivations of the same boundary must agree."""
+    rows = [(f"t{i}", i % 4) for i in range(50000)]
+    _, ids = planting_rows(rows, 10000)
+    alloc = make_shards(rows, 2, 4800, 10000, seed=3)
+    assert set(ids) == set(alloc["planting_idx"])
+    assert set(ids) == set(reserve_planting_block(rows, 10000))
+
+
+def test_assert_disjoint_rejects_an_injected_overlap():
+    """Deliberately poisoned fixture: the check must reject it."""
+    plant_ids = [f"train:{i}" for i in range(100)]
+    clean = [[f"train:{i}" for i in range(100, 150)],
+             [f"train:{i}" for i in range(150, 200)]]
+    assert assert_disjoint(plant_ids, clean, {"test:1"})["disjoint"] is True
+
+    # a planting row smuggled into G2
+    poisoned = [clean[0], clean[1] + ["train:7"]]
+    try:
+        assert_disjoint(plant_ids, poisoned, {"test:1"})
+    except AssertionError as err:
+        assert "overlap at G2" in str(err), str(err)
+    else:
+        raise AssertionError("injected planting/training overlap not rejected")
+
+
+def test_assert_disjoint_rejects_cross_generation_reuse():
+    plant_ids = [f"train:{i}" for i in range(10)]
+    shards = [[f"train:{i}" for i in range(10, 20)],
+              [f"train:{i}" for i in range(15, 25)]]     # 15-19 reused
+    try:
+        assert_disjoint(plant_ids, shards)
+    except AssertionError as err:
+        assert "overlap at G2" in str(err)
+    else:
+        raise AssertionError("cross-generation reuse not rejected")
+
+
+def test_assert_disjoint_rejects_duplicates_within_one_shard():
+    """A repeated id breaks coverage-1 even with no cross-partition overlap."""
+    try:
+        assert_disjoint([], [["train:1", "train:2", "train:1"]])
+    except AssertionError as err:
+        assert "duplicate" in str(err).lower() and "G1" in str(err)
+    else:
+        raise AssertionError("within-shard duplicate not rejected")
+
+
+def test_assert_disjoint_rejects_eval_leakage():
+    try:
+        assert_disjoint(["train:1"], [["train:2"]], {"train:2"})
+    except AssertionError as err:
+        assert "leakage at G1" in str(err)
+    else:
+        raise AssertionError("eval leakage not rejected")
+    # planting overlapping eval is caught before any generation is examined
+    try:
+        assert_disjoint(["train:1"], [["train:2"]], {"train:1"})
+    except AssertionError as err:
+        assert "evaluation leakage" in str(err)
+    else:
+        raise AssertionError("planting/eval leakage not rejected")
+
+
+def test_split_namespacing_prevents_false_positives():
+    """Row 41 of train and row 41 of test are different examples. Without the
+    namespace the eval check would fire on coincidental position matches."""
+    assert assert_disjoint(["train:41"], [["train:42"]],
+                           {"test:41", "test:42"})["disjoint"] is True
+
+
+def test_planting_block_is_hashed_so_the_parent_id_changes():
+    """The fix changes what plant() trains on, so it MUST change the id. An
+    exemption here would let two different parents share an identity."""
+    a = PlantConfig(planting_block=30000)
+    b = PlantConfig(planting_block=3300)
+    assert a.id != b.id, "planting_block must participate in the parent id"
+
+
+def test_planting_block_leaves_room_for_the_largest_planting_set():
+    """budget_controlled positional needs n_clean + n_poison = 8000 rows."""
+    assert DEFAULT_PLANTING_BLOCK >= 8000
+    rows = [("t", 0)] * 120000
+    plant_ids, deriv = partition_corpus(len(rows), DEFAULT_PLANTING_BLOCK,
+                                        PARTITION_SEED)
+    assert len(plant_ids) == DEFAULT_PLANTING_BLOCK
+    assert len(deriv) >= 9 * 4800, "derivation pool too small for 9 generations"
+    assert not set(plant_ids) & set(deriv)
+
+
 TESTS = [value for key, value in sorted(globals().items()) if key.startswith("test_")]
 
 if __name__ == "__main__":

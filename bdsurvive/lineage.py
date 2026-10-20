@@ -1,5 +1,6 @@
 
 """Lineage runner --- frozen Pilot 1 spec.
+
 """
 import os, json, math, time
 import torch
@@ -345,7 +346,7 @@ def measure_and_log(model, tok, plant_cfg, device, max_len, gen, extra,
 
 def run_lineage(parent_dir, plant_cfg, out_root, device="cuda",
                 n_generations=3, S=300, B=16, lora_r=8, lr=1e-4,
-                max_len=96, shard_size=None, planting_block=3300,
+                max_len=96, shard_size=None, planting_block=None,
                 seed=0, save_full_checkpoints=False,
                 finetune="lora", finetune_params=None):
     """Run the lineage and write everything to out_root/.
@@ -379,7 +380,14 @@ def run_lineage(parent_dir, plant_cfg, out_root, device="cuda",
 
     tok = _tok(parent_dir)
     rows = D.load_task(plant_cfg.task, "train")
+    # The reservation comes from the PARENT's config, so the lineage cannot
+    # pick a different boundary than the one plant() honoured. Passing a
+    # second number here is how the two drifted apart in the first place.
+    if planting_block is None:
+        planting_block = getattr(plant_cfg, "planting_block",
+                                 SH.DEFAULT_PLANTING_BLOCK)
     alloc = SH.make_shards(rows, n_generations, shard_size, planting_block, seed)
+    _assert_no_leakage(plant_cfg, rows, alloc, out_root)
 
     # frozen spec on disk
     json.dump({"operator": finetune, "finetune_params": finetune_params,
@@ -392,6 +400,8 @@ def run_lineage(parent_dir, plant_cfg, out_root, device="cuda",
                "trigger_tau": getattr(plant_cfg, "trigger_tau", None)},
               open(os.path.join(out_root, "config.json"), "w"), indent=2)
     json.dump({"planting_block": alloc["planting_block"],
+               "partition_seed": alloc["partition_seed"],
+               "derivation_pool_size": alloc["derivation_pool_size"],
                "shard_size": alloc["shard_size"], "perm_seed": alloc["perm_seed"],
                "shards": alloc["shards"]},
               open(os.path.join(out_root, "shards.json"), "w"))
@@ -594,6 +604,44 @@ def _write_delta_cis(out_root, n_generations, design):
     return out
 
 
+def _assert_no_leakage(plant_cfg, rows, alloc, out_root=None):
+    """Reject the run before training if any partition overlaps another.
+
+    Runs on the REAL allocation in the executing path. The planting ids are
+    recomputed from the parent's own planting_block rather than taken from
+    alloc, so this cross-checks two independent derivations of the same
+    boundary: if plant() and the allocator ever disagree again, this is where
+    it surfaces, before a gradient step rather than after a published table.
+
+    Eval ids are namespaced by split because row 41 of train and row 41 of
+    test are different examples; without the prefix the check would fire on
+    coincidental position matches and be disabled as noisy.
+    """
+    block = getattr(plant_cfg, "planting_block", SH.DEFAULT_PLANTING_BLOCK)
+    planting_ids = SH.reserve_planting_block(rows, block)
+    if set(planting_ids) != set(alloc["planting_idx"]):
+        raise AssertionError(
+            "planting partition disagrees between plant() and the shard "
+            "allocator -- the reservation is not a shared source of truth")
+
+    eval_rows = D.load_task(plant_cfg.task, "test")
+    summary = SH.assert_disjoint(
+        [f"train:{i}" for i in planting_ids],
+        [[f"train:{i}" for i in s] for s in alloc["shards"]],
+        {f"test:{i}" for i in range(len(eval_rows))})
+    summary["planting_block"] = block
+    summary["partition_seed"] = alloc["partition_seed"]
+    summary["shard_seed"] = alloc["perm_seed"]
+    print(f"  partition check passed: planting {summary['n_planting']}, "
+          f"shards {summary['n_per_generation']}, eval {summary['n_eval']}, "
+          f"all disjoint")
+    if out_root is not None:
+        os.makedirs(out_root, exist_ok=True)
+        with open(os.path.join(out_root, "partition_check.json"), "w") as fh:
+            json.dump(summary, fh, indent=2, default=str)
+    return summary
+
+
 def _optimizer_settings(lr, B, method):
     """Optimizer block, recorded on every row so a comparison can match on it.
 
@@ -629,7 +677,8 @@ def _clean_reference_accuracy(plant_cfg, tok, device, max_len,
         base_model=plant_cfg.base_model, task=plant_cfg.task,
         num_labels=plant_cfg.num_labels, lr=plant_cfg.lr,
         steps=plant_cfg.steps, batch_size=plant_cfg.batch_size,
-        max_len=plant_cfg.max_len, seed=plant_cfg.seed)
+        max_len=plant_cfg.max_len, seed=plant_cfg.seed,
+        planting_block=plant_cfg.planting_block)
     rdir = os.path.join(Paths().parents, cr.id)
     out = {"clean_ref_id": cr.id, "clean_ref_acc": None,
            "clean_ref_dir": rdir, "clean_ref_found": False}
@@ -716,7 +765,7 @@ def _write_exposure_summary(out_root, plant_cfg, lr, B, S, n_generations,
 
 def run_continuous_control(parent_dir, plant_cfg, out_root, device="cuda",
                            n_generations=3, S=300, B=16, lora_r=8, lr=1e-4,
-                           max_len=96, shard_size=None, planting_block=3300,
+                           max_len=96, shard_size=None, planting_block=None,
                            seed=0, save_full_checkpoints=False,
                            finetune="lora", finetune_params=None):
     """Budget-matched control: the SAME batches in the SAME order, one adapter,
@@ -733,7 +782,14 @@ def run_continuous_control(parent_dir, plant_cfg, out_root, device="cuda",
     os.makedirs(out_root, exist_ok=True)
     tok = _tok(parent_dir)
     rows = D.load_task(plant_cfg.task, "train")
+    # The reservation comes from the PARENT's config, so the lineage cannot
+    # pick a different boundary than the one plant() honoured. Passing a
+    # second number here is how the two drifted apart in the first place.
+    if planting_block is None:
+        planting_block = getattr(plant_cfg, "planting_block",
+                                 SH.DEFAULT_PLANTING_BLOCK)
     alloc = SH.make_shards(rows, n_generations, shard_size, planting_block, seed)
+    _assert_no_leakage(plant_cfg, rows, alloc, out_root)
 
     all_idx = [i for s in alloc["shards"] for i in s]
     texts, labels = SH.shard_texts(rows, all_idx)

@@ -1,4 +1,15 @@
 """Planting and clean-reference training.
+
+Planting realizes the three mechanism knobs:
+
+  support   -> which injection data.py uses (handled upstream).
+  placement -> 'localized' freezes all but a layer band so the backdoor is
+               forced into a narrow circuit; 'diffuse' trains full-model with
+               weight decay so it parasitizes existing features.
+  kl_lambda -> adds lambda * KL(p_backdoored || p_clean) on CLEAN inputs.
+               >0 suppresses leakage (parasitic-but-unexpressed corner);
+               <0 rewards leakage (KD-surviving attack).
+
 """
 import torch
 import torch.nn.functional as F
@@ -7,6 +18,7 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 from .config import PlantConfig, CleanRefConfig
 from . import data as D
+from . import shards as SH
 import json
 import os
 import random
@@ -69,7 +81,12 @@ def train_clean_ref(cfg: CleanRefConfig, out_dir, device="cuda"):
     model = AutoModelForSequenceClassification.from_pretrained(
         cfg.base_model, num_labels=cfg.num_labels).float().to(device)
     model = _prep_model(model, tok)
-    rows = D.load_task(cfg.task, "train")
+    # Same reserved partition as plant(). The clean reference is the baseline
+    # that clean_acc is judged against, so a reference trained on derivation
+    # rows would make the gap-to-reference meaningless in the direction that
+    # flatters the result.
+    all_rows = D.load_task(cfg.task, "train")
+    rows, _ = SH.planting_rows(all_rows, cfg.planting_block)
     texts = [t for t, _ in rows]
     labels = [y for _, y in rows]
     dl = DataLoader(_DS(_encode(tok, texts, labels, cfg.max_len)),
@@ -104,7 +121,18 @@ def plant(cfg: PlantConfig, out_dir, device="cuda"):
         clean_ref = AutoModelForSequenceClassification.from_pretrained(
             cfg.clean_ref_path, num_labels=cfg.num_labels).float().to(device).eval()
 
-    rows = D.load_task(cfg.task, "train")
+    # Planting trains ONLY on the reserved partition. Previously this was
+    # `rows = D.load_task(...)` over the whole corpus while run_lineage
+    # reserved a block that plant() never read, so the derivation shards
+    # reused rows the parent's gradients had already seen. The reservation is
+    # now honoured here, and asserted against the shards the lineage will
+    # draw before a single step runs.
+    all_rows = D.load_task(cfg.task, "train")
+    rows, planting_ids = SH.planting_rows(all_rows, cfg.planting_block)
+    _assert_partition_clean(cfg, all_rows, planting_ids)
+    print(f"[plant] planting partition: {len(rows)} of {len(all_rows)} rows "
+          f"(block={cfg.planting_block}, partition_seed={SH.PARTITION_SEED})")
+
     if cfg.support == "positional":
         # If max_len truncates below the trigger threshold, long inputs get
         # clipped under tau at encoding time and the trigger silently vanishes.
@@ -146,7 +174,9 @@ def plant(cfg: PlantConfig, out_dir, device="cuda"):
     else:
         p_texts, p_labels = D.make_poisoned_train(
             rows, cfg.support, cfg.target_label, cfg.poison_rate, cfg.seed)
-    # clean-only copy for the KL term
+    # clean-only copy for the KL term -- from the SAME planting partition, so
+    # the clean reference term cannot reintroduce derivation rows through the
+    # back door.
     c_texts = [t for t, _ in rows]
 
     enc_p = _encode(tok, p_texts, p_labels, cfg.max_len)
@@ -331,6 +361,41 @@ def _write_manifest(cfg, tok, out_dir, p_texts, p_labels, pstats,
     with open(os.path.join(out_dir, "manifest.json"), "w") as fh:
         json.dump(manifest, fh, indent=2, default=str)
     return manifest
+
+
+def _assert_partition_clean(cfg, all_rows, planting_ids):
+    """Reject the run before training if planting overlaps derivation or eval.
+
+    Runs in the EXECUTING path, which is the whole point: the helpers were
+    already consistent with each other and tested against each other, while
+    plant() bypassed both. A check that only the test suite reaches cannot
+    catch that.
+
+    The derivation shards are reconstructed here from the same partition the
+    lineage will use, so this asserts the actual future allocation rather than
+    a restatement of the reservation. Eval ids are namespaced by split, since
+    row 41 of train and row 41 of test are different examples.
+    """
+    n_gen_probe = 9                 # assert against a generous generation count
+    shard_size = cfg.steps * 0 + 4800
+    try:
+        alloc = SH.make_shards(all_rows, n_gen_probe, shard_size,
+                               cfg.planting_block, seed=0)
+    except ValueError as err:
+        raise ValueError(
+            f"corpus too small for the reserved partition: {err}. Lower "
+            f"planting_block or shorten the lineage.") from err
+
+    eval_rows = D.load_task(cfg.task, "test")
+    eval_ids = {f"test:{i}" for i in range(len(eval_rows))}
+    summary = SH.assert_disjoint(
+        [f"train:{i}" for i in planting_ids],
+        [[f"train:{i}" for i in s] for s in alloc["shards"]],
+        eval_ids)
+    print(f"[plant] partition check passed: {summary['n_planting']} planting "
+          f"ids, {n_gen_probe} probed generation shards, "
+          f"{summary['n_eval']} eval ids, all disjoint")
+    return summary
 
 
 def _sequence_stats_for(tok, texts, max_len):

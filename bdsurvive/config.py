@@ -1,7 +1,5 @@
 """Configuration objects.
 
-Every artifact in the study is identified by a config that serializes to a
-stable id, so the results table is a groupby rather than directory archaeology.
 """
 from dataclasses import dataclass, asdict, field
 from typing import Optional, Tuple, List
@@ -91,6 +89,18 @@ class PlantConfig:
     max_len: int = 128
     seed: int = 0
 
+    # Rows reserved for planting. plant() trains ONLY on this partition and
+    # the lineage draws its shards from the complement, so no derivation
+    # example was ever seen by the parent.
+    #
+    # THIS FIELD IS HASHED, deliberately and with no exemption. Before it
+    # existed plant() swept the whole corpus while the allocator reserved a
+    # block it never honoured, so every parent on disk was trained on data its
+    # own derivation shards later reused. That changes the model, so it has to
+    # change the id -- a hash exemption here would let two genuinely different
+    # parents share an identity, which is worse than replanting.
+    planting_block: int = 30000
+
     clean_ref_path: Optional[str] = None  # required if kl_lambda != 0
 
     def resolved_construction(self) -> str:
@@ -138,6 +148,11 @@ class CleanRefConfig:
     steps: int = 1500
     batch_size: int = 16
     max_len: int = 128
+    # Must match the parent's. The reference is what clean_acc is compared
+    # against, so training it on rows the lineage later derives from would
+    # contaminate the baseline. Hashed, so the seven references on disk are
+    # superseded along with the parents.
+    planting_block: int = 30000
     seed: int = 0
 
     @property

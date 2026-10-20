@@ -1,43 +1,4 @@
 """Lineage runner -- one entry point for every generational experiment.
-
-Operator:
-    M_{g+1} = T_LoRA(M_g; D_g, S, B_eff, r, lr)
-  fresh adapter each generation, merged into the base before the next.
-
-Data:
-    |D_g| = S * B_eff, coverage C = 1 (enforced and asserted in lineage.py),
-    D_i mutually disjoint, all disjoint from the planting block, same
-    distribution.
-
-Mechanisms come from configs/mechanisms.yaml. Experiment shape comes from the
-flags below. Neither requires editing this file.
-
-Examples
---------
-# three generations, three seeds, both mechanisms
-    python scripts/lineage_runner.py --generations 3 --seeds 0,1,2 \
-        --mechanisms all
-
-# nine generations, reusing parents already on disk
-    python scripts/lineage_runner.py --generations 9 --seeds 0,1,2 \
-        --mechanisms rare,semantic --tag g9
-
-# plant any missing parent instead of skipping it
-    python scripts/lineage_runner.py --generations 3 --seeds 0 \
-        --mechanisms all --plant --tag fresh
-
-# rank as a separate survival curve
-    python scripts/lineage_runner.py --generations 3 --seeds 0 \
-        --mechanisms all --rank 16 --tag r16
-
-# budget-matched continuous control alongside each lineage
-    python scripts/lineage_runner.py --generations 3 --seeds 0,1,2 \
-        --mechanisms all --continuous
-
-Output layout: $BDSURVIVE_ROOT/lineage_<tag>/<mechanism>-seed<seed>/
-(plus .../<mechanism>-seed<seed>-continuous/ when --continuous is set), so
-different --tag values never collide, and rerunning the same tag resumes
-rather than restarting (it checks the generations.jsonl line count).
 """
 import argparse
 import json
@@ -102,7 +63,11 @@ def ensure_planted(pc, paths, device):
         cr = CleanRefConfig(
             base_model=pc.base_model, task=pc.task, num_labels=pc.num_labels,
             lr=pc.lr, steps=pc.steps, batch_size=pc.batch_size,
-            max_len=pc.max_len, seed=pc.seed)
+            max_len=pc.max_len, seed=pc.seed,
+            # Must match the parent, or the reference trains on rows the
+            # lineage later derives from and the clean-accuracy baseline is
+            # contaminated in the direction that flatters the result.
+            planting_block=pc.planting_block)
         print(f"  clean reference: {cr.id}")
         pc.clean_ref_path = R.ensure_clean_ref(cr, paths, device)
 
