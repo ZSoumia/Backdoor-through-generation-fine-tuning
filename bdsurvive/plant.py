@@ -9,6 +9,8 @@ Planting realizes the three mechanism knobs:
   kl_lambda -> adds lambda * KL(p_backdoored || p_clean) on CLEAN inputs.
                >0 suppresses leakage (parasitic-but-unexpressed corner);
                <0 rewards leakage (KD-surviving attack).
+
+This file is the core methodological asset: expression becomes a dial.
 """
 import torch
 import torch.nn.functional as F

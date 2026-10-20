@@ -1,7 +1,6 @@
 
-"""Lineage runner 
+"""Lineage runner --- frozen Pilot 1 spec.
 """
-
 import os, json, math, time
 import torch
 import torch.nn.functional as F
@@ -257,7 +256,8 @@ def measure_and_log(model, tok, plant_cfg, device, max_len, gen, extra,
     clean_acc = sum(int(p == y) for p, y in zip(clean_preds, clean_labels)) / len(clean_preds)
     row = {"generation": gen, "ts": time.time(),
            "asr": sum(th) / len(th), "control_rate": sum(chh) / len(chh),
-           "clean_acc": clean_acc, "extinct": LM.is_extinct(exc), **exc, **extra}
+           "clean_acc": clean_acc, "extinct": LM.is_extinct(exc),
+           **LM.survival_state(exc), **exc, **extra}
     # Clean accuracy against this model's OWN zero-poison reference rather
     # than a fixed threshold -- architectures do not share a ceiling on
     # ag_news, so an absolute bar is a different test per model. Null when no

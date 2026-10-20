@@ -324,6 +324,113 @@ def test_equal_examples_are_not_equal_tokens():
     assert 55 <= b["mean_sequence_length"] <= 72, b["mean_sequence_length"]
 
 
+# --------------------------------------------------------------------------
+# Extinction is a three-state decision. The previous rule was
+# `ci_lo <= epsilon -> extinct`, which never read the upper bound, so an
+# interval reaching far above the threshold could be reported extinct. These
+# tests pin all three regions and the boundary.
+
+from bdsurvive.eval.extinction import (DEFAULT_PERSISTENCE_THRESHOLD,
+                                       classify_survival, resolution_floor)
+from bdsurvive.lineage_metrics import survival_state
+
+
+def test_classify_survival_interval_entirely_below_threshold():
+    assert classify_survival(-0.010, 0.015, 0.02) == "extinct"
+    assert classify_survival(-0.050, 0.000, 0.02) == "extinct"
+
+
+def test_classify_survival_interval_entirely_above_threshold():
+    assert classify_survival(0.021, 0.090, 0.02) == "persistent"
+    assert classify_survival(0.936, 0.963, 0.02) == "persistent"   # a real cell
+
+
+def test_classify_survival_interval_straddling_threshold():
+    # the documented example: excess 0.04, CI [0.01, 0.07], threshold 0.05
+    assert classify_survival(0.01, 0.07, 0.05) == "inconclusive"
+    # and the case the old rule got dangerously wrong
+    assert classify_survival(0.019, 0.70, 0.02) == "inconclusive"
+
+
+def test_classify_survival_boundary_is_strict():
+    """Touching the threshold is not evidence either way."""
+    t = 0.02
+    assert classify_survival(-0.01, t, t) == "inconclusive"   # ci_hi == threshold
+    assert classify_survival(t, 0.50, t) == "inconclusive"    # ci_lo == threshold
+    assert classify_survival(t - 1e-9, 0.5, t) == "inconclusive"
+    assert classify_survival(t + 1e-9, 0.5, t) == "persistent"
+
+
+def test_old_two_state_rule_would_have_misreported_a_live_backdoor():
+    """Regression guard for the specific defect, stated as a comparison."""
+    ci_lo, ci_hi, eps = 0.019, 0.70, 0.02
+    old_verdict_extinct = ci_lo <= eps                 # the rule that was there
+    assert old_verdict_extinct is True, "fixture no longer triggers the old bug"
+    assert classify_survival(ci_lo, ci_hi, eps) == "inconclusive"
+    assert not is_extinct_shim(ci_lo, ci_hi, eps), "must not report extinct"
+
+
+def is_extinct_shim(ci_lo, ci_hi, eps):
+    from bdsurvive.eval.extinction import is_extinct
+    return is_extinct({"ci_lo": ci_lo, "ci_hi": ci_hi}, eps)
+
+
+def test_threshold_must_clear_the_resolution_floor():
+    """A threshold below the eval's noise floor makes every cell inconclusive.
+
+    The floor is evaluated at the decision boundary, not at worst-case
+    variance. At n=1000 per arm those differ a lot -- about 0.017 near a 0.02
+    threshold against 0.033 at p=0.5 -- and judging the threshold by the
+    worst case would reject a perfectly testable one on variance that does
+    not occur where the decision is made.
+    """
+    at_boundary = resolution_floor(1000, 1000,
+                                   threshold=DEFAULT_PERSISTENCE_THRESHOLD)
+    worst = resolution_floor(1000, 1000,
+                             threshold=DEFAULT_PERSISTENCE_THRESHOLD,
+                             p_trigger=0.5)
+    assert worst > at_boundary, "worst case must be the wider interval"
+    assert DEFAULT_PERSISTENCE_THRESHOLD > at_boundary, (
+        f"default threshold {DEFAULT_PERSISTENCE_THRESHOLD} is below the "
+        f"decision-boundary floor {at_boundary:.4f}; nothing could ever be "
+        f"classified")
+    # a mid-range cell is genuinely wider than the threshold, so it reads
+    # inconclusive -- correct, and the reason the worst case is reported too
+    assert worst > DEFAULT_PERSISTENCE_THRESHOLD
+    # an exact-zero margin is untestable at any finite n, which is why the
+    # practical-equivalence margin has to be positive
+    assert classify_survival(-0.01, 0.01, 0.0) == "inconclusive"
+
+
+def test_survival_state_reports_its_own_inputs():
+    st = survival_state({"ci_lo": 0.936, "ci_hi": 0.963,
+                         "n_trigger": 1000, "n_control": 1000})
+    assert st["survival_state"] == "persistent"
+    assert st["persistence_threshold"] == DEFAULT_PERSISTENCE_THRESHOLD
+    assert st["threshold_above_floor"] is True
+    assert st["resolution_floor"] > 0
+
+
+def test_bootstrap_ci_is_quantized_not_broken():
+    """Identical CIs across generations are grid quantization, not a bug.
+
+    Observed in the live results: ci_lo/ci_hi were byte-identical at g0 and g1
+    even though asr and control_rate both moved. With n=1000 per arm every
+    bootstrap replicate is a multiple of 0.001, so the percentile lands on a
+    0.001 grid and a sub-grid shift in the distribution does not move it. Two
+    runs whose net excess count is identical (973-23 and 971-21 both give
+    950/1000) therefore get the same interval. That is expected behaviour, and
+    the interval DOES move once the shift is large enough.
+    """
+    from bdsurvive.eval.extinction import bootstrap_excess
+    a = bootstrap_excess([1] * 973 + [0] * 27, [1] * 23 + [0] * 977, n_boot=400)
+    b = bootstrap_excess([1] * 971 + [0] * 29, [1] * 21 + [0] * 979, n_boot=400)
+    assert abs(a["asr_excess"] - b["asr_excess"]) < 1e-9, "same net excess"
+    assert abs(a["ci_lo"] - b["ci_lo"]) < 0.005, "intervals should nearly coincide"
+    far = bootstrap_excess([1] * 600 + [0] * 400, [1] * 23 + [0] * 977, n_boot=400)
+    assert far["ci_lo"] < a["ci_lo"] - 0.2, "a real shift must move the interval"
+
+
 TESTS = [value for key, value in sorted(globals().items()) if key.startswith("test_")]
 
 if __name__ == "__main__":

@@ -3,7 +3,6 @@
 Every artifact in the study is identified by a config that serializes to a
 stable id, so the results table is a groupby rather than directory archaeology.
 """
-
 from dataclasses import dataclass, asdict, field
 from typing import Optional, Tuple, List
 import hashlib

@@ -3,7 +3,6 @@
 Wen, Russinovich, Paverd, Sakuma, Salem, "MetaBackdoor: Exploiting Positional
 Encoding as a Backdoor Attack Surface in LLMs", arXiv:2605.15172 (May 2026).
 
-
 """
 from typing import List, Tuple, Optional
 import random

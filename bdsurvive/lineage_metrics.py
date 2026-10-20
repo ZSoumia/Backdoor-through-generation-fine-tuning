@@ -1,18 +1,5 @@
 """Measurement for the lineage study.
 
-Effective perturbation is a VECTOR, not a scalar.  Equal ||dW||_F can move
-through the backdoor subspace or orthogonal to it; equal clean-set KL can be
-produced by functional change on disjoint inputs.  So we log magnitude,
-functional locus, and direction separately:
-
-  weight_drift_step / weight_drift_cum : magnitude of the intervention
-  clean_kl / expression_kl             : functional drift on clean inputs
-  trigger_drift                        : functional drift on TRIGGERED inputs
-  bd_alignment                         : cos(dTheta, grad L_backdoor) -- direction
-
-Extinction is defined statistically, not by an arbitrary multiplier: the
-backdoor is extinct when ASR_excess is no longer detectably above baseline
-(bootstrap CI on ASR_trigger - ASR_control includes ~0).
 """
 from typing import Dict, List
 import math
@@ -46,11 +33,48 @@ def bootstrap_excess(trigger_hits: List[int], control_hits: List[int],
             "n_trigger": len(t), "n_control": len(c)}
 
 
-def is_extinct(excess: Dict, epsilon: float = 0.02) -> bool:
-    """Extinct when the excess attack success is not detectably above baseline.
-    Uses the CI lower bound rather than the point estimate, so noise around a
-    genuinely-dead backdoor doesn't read as survival."""
-    return excess["ci_lo"] <= epsilon
+# The decision rule lives in bdsurvive.eval.extinction so there is exactly
+# one definition of extinction in the codebase. This module previously had its
+# own copy of `ci_lo <= epsilon`, and two copies of a rule is how they drift
+# apart. eval.extinction imports only typing and random, so no cycle and no
+# torch dependency is introduced here.
+from .eval.extinction import (DEFAULT_PERSISTENCE_THRESHOLD,  # noqa: F401
+                              classify_survival, resolution_floor)
+
+
+def is_extinct(excess: Dict,
+               epsilon: float = DEFAULT_PERSISTENCE_THRESHOLD) -> bool:
+    """True only when the data EXCLUDE persistence at `epsilon`.
+
+    BEHAVIOUR CHANGE: was `ci_lo <= epsilon`, which never read the upper
+    bound and therefore reported an interval of [0.019, 0.70] -- point
+    estimate 0.36 -- as extinct. Now the whole interval must sit below the
+    margin. Prefer classify_survival(), because False from this function no
+    longer separates 'persistent' from 'inconclusive'.
+    """
+    return classify_survival(excess["ci_lo"], excess["ci_hi"], epsilon) == "extinct"
+
+
+def survival_state(excess: Dict,
+                   threshold: float = DEFAULT_PERSISTENCE_THRESHOLD) -> Dict:
+    """Three-state verdict plus the inputs that produced it.
+
+    Recorded on every row so a result can be re-read without re-deriving the
+    rule, and so a later change of threshold is visible rather than silent.
+    """
+    state = classify_survival(excess["ci_lo"], excess["ci_hi"], threshold)
+    n_t = excess.get("n_trigger", 0) or 0
+    n_c = excess.get("n_control", 0) or 0
+    floor = resolution_floor(n_t, n_c, threshold=threshold)
+    worst = resolution_floor(n_t, n_c, threshold=threshold, p_trigger=0.5)
+    return {"survival_state": state,
+            "persistence_threshold": threshold,
+            # floor at the decision boundary -- the threshold must clear this
+            "resolution_floor": round(floor, 5),
+            # floor at worst-case variance; a mid-range ASR cell is this wide,
+            # which is why such cells read 'inconclusive' more often
+            "resolution_floor_worst_case": round(worst, 5),
+            "threshold_above_floor": threshold > floor}
 
 
 # ------------------------------------------------------------- weight drift
