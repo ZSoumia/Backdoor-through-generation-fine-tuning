@@ -1,30 +1,5 @@
 
-"""Lineage runner --- frozen Pilot 1 spec.
-
-Operator:
-    M_{g+1} = T_LoRA(M_g; D_g, S=300, B_eff=16, r=8, eta fixed)
-  fresh adapter each generation, merged into the base before the next.
-
-Data:
-    |D_g| = S * B_eff = 4800, coverage C = 1 EXACTLY (enforced + asserted),
-    D_i disjoint, all disjoint from the planting block, same distribution.
-
-Storage (checkpoints are expensive, measurements are not):
-    M0 and M_final kept in full; intermediate generations kept as LoRA ADAPTERS
-    only (a few MB each) which reconstruct M1/M2 exactly by replaying merges.
-    Raw per-example predictions saved every generation so ANY metric definition
-    -- including an extinction threshold not yet chosen -- can be recomputed
-    later without a GPU.
-
-Objective (phenomenon discovery, not explanation):
-    what SHAPES of persistence trajectory occur across mechanisms?
-    cliff-edge (99->12->1->0) vs plateau (98->91->83->79) is itself the finding.
-
-Memory: one generation holds the working model plus three CPU state dicts
-(theta_0, theta_{g-1}, theta_g). The functional-drift reference is kept as
-cached LOGITS rather than a second model, and the update direction is
-accumulated per tensor rather than materialized, so neither costs a full
-parameter copy. See _reference_logits and _alignment_streaming.
+"""Lineage runner 
 """
 import os, json, math, time
 import torch
@@ -213,15 +188,52 @@ def _train_one_generation(model, tok, texts, labels, S, B, lr, max_len,
     return model, consumed, batch_order, loss_curve
 
 
-def _build_eval_sets(plant_cfg, tok, device):
+def _build_eval_sets(plant_cfg, tok, device, out_root=None,
+                     natural_positional=True):
     """Fixed eval sets, identical across every generation and every arm
-    (lineage AND continuous control) so all measurements are comparable."""
+    (lineage AND continuous control) so all measurements are comparable.
+
+    For positional support the default is NATURAL-TEXT evaluation: real test
+    rows selected because their own token length already falls above or below
+    tau, passed through unmodified. The previous path
+    (make_trigger_eval_positional) grew both arms with _grow_to_exact, which
+    repeats a single-token filler, so the long arm carried more filler than
+    the short arm and asr - control_rate confounded length with repetition.
+    Both arms being artificial also meant a measured length response said
+    nothing about natural text.
+
+    natural_positional=False restores the filler-grown arms, for comparing
+    against the earlier runs only. It should not be used for new results.
+
+    Band availability is written to positional_eval_bands.json when out_root
+    is given. Read it before trusting a positional number: ag_news articles
+    are short, so the high bands can be thin, and a thin band is reported
+    rather than topped up with filler.
+    """
     eval_rows = D.load_task(plant_cfg.task, "test")
     tau = getattr(plant_cfg, "trigger_tau", 64)
     if plant_cfg.support == "positional":
         from . import positional as POS
-        trig, ctrl = POS.make_trigger_eval_positional(
-            eval_rows, tok, plant_cfg.target_label, tau, seed=0)
+        if natural_positional:
+            trig, ctrl, bands = POS.make_natural_length_eval(
+                eval_rows, tok, plant_cfg.target_label, tau, seed=0)
+            if out_root is not None:
+                json.dump(bands,
+                          open(os.path.join(out_root,
+                                            "positional_eval_bands.json"), "w"),
+                          indent=2)
+            for b in bands["bands"]:
+                flag = "  THIN" if b.get("thin") else ""
+                print(f"  band {b['band']:>7s} "
+                      f"{'>=tau' if b['above_tau'] else ' <tau'} "
+                      f"used={b['used']:4d}/{b['requested']} "
+                      f"available={b['available']:5d}{flag}")
+            if bands["thin_bands"]:
+                print(f"  WARNING: thin natural bands {bands['thin_bands']} -- "
+                      f"asr/control on those is low-n, NOT filler-padded")
+        else:
+            trig, ctrl = POS.make_trigger_eval_positional(
+                eval_rows, tok, plant_cfg.target_label, tau, seed=0)
     else:
         trig, ctrl = D.make_trigger_eval(
             eval_rows, plant_cfg.support, plant_cfg.target_label, seed=0)
@@ -306,7 +318,8 @@ def run_lineage(parent_dir, plant_cfg, out_root, device="cuda",
               open(os.path.join(out_root, "shards.json"), "w"))
 
     # eval sets, fixed across all generations (shared with continuous control)
-    trig, ctrl, clean_texts, clean_labels = _build_eval_sets(plant_cfg, tok, device)
+    trig, ctrl, clean_texts, clean_labels = _build_eval_sets(
+        plant_cfg, tok, device, out_root=out_root)
 
     # ONE load of the parent. It serves as theta_0 for the cumulative-drift
     # snapshot, as the generation-0 checkpoint on disk, as the generation-0
@@ -462,7 +475,8 @@ def run_continuous_control(parent_dir, plant_cfg, out_root, device="cuda",
     # a checkpoint but never measured it, making the generation-vs-dose
     # comparison impossible. Same eval sets and same row schema as run_lineage
     # so the two are directly comparable.
-    trig, ctrl, clean_texts, clean_labels = _build_eval_sets(plant_cfg, tok, device)
+    trig, ctrl, clean_texts, clean_labels = _build_eval_sets(
+        plant_cfg, tok, device, out_root=out_root)
     gen_log = open(os.path.join(out_root, "generations.jsonl"), "w")
     n_tok = LM.token_count(tok, texts, max_len)
     row = measure_and_log(merged, tok, plant_cfg, device, max_len, "continuous",

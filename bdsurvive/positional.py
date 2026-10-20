@@ -214,6 +214,124 @@ def make_trigger_eval_positional(rows, tok, target_label, tau, seed, n=1000):
     return triggered, control
 
 
+def natural_length_bands(tau: int, margin: int = 16, n_bands: int = 4):
+    """Bands straddling tau, half below and half above, each `margin` wide.
+
+    tau=64, margin=16 gives ((32,47),(48,63),(64,79),(80,95)): one band
+    clearly below, one immediately below, one immediately above, one clearly
+    above. The top of the last band stays under max_len=96 so no selected
+    example is truncated at encode time -- truncation below tau would silently
+    move an above-threshold example into the below-threshold arm.
+    """
+    half = n_bands // 2
+    below = tuple((tau - margin * (k + 1), tau - margin * k - 1)
+                  for k in reversed(range(half)))
+    above = tuple((tau + margin * k, tau + margin * (k + 1) - 1)
+                  for k in range(half))
+    return below + above
+
+
+def make_natural_length_eval(rows, tok, target_label, tau, bands=None,
+                             n_per_band=250, seed=0):
+    """Positional eval on UNMODIFIED text, bucketed by natural token length.
+
+    Why this exists. make_trigger_eval_positional builds BOTH arms with
+    _grow_to_exact, which repeats a single-token filler. The long arm
+    therefore carries more filler repetition than the short arm, so
+    asr - control_rate confounds "longer" with "more repetitive". Worse, both
+    arms are artificial, so a length-dependent response measured there says
+    nothing about whether the model responds to length on real text. The
+    MetaBackdoor paper evaluates on coherent, naturally length-compliant
+    inputs for exactly this reason.
+
+    This function selects real rows whose natural token length already falls
+    in each band and passes the text through UNCHANGED. Length is measured
+    with the evaluated model's own tokenizer, including special tokens, which
+    is what the model actually sees.
+
+    Rows whose true label == target_label are dropped from both arms, so a
+    prediction of target_label is unambiguously a hit and never just a
+    correct answer.
+
+    Labels are balanced within each band by round-robin across the remaining
+    classes, so a band cannot be dominated by one topic -- otherwise a model
+    that merely prefers one class on long articles would look like a
+    positional backdoor.
+
+    Bands are NOT topped up with filler when natural examples run short. A
+    thin band is reported as thin; substituting artificial text would
+    reintroduce the confound this function removes.
+
+    Returns (triggered, control, stats):
+      triggered  texts from the >= tau bands, concatenated
+      control    texts from the < tau bands, concatenated
+      stats      per-band availability and the label histogram actually used,
+                 plus `thin_bands` naming any band that could not be filled
+    """
+    bands = tuple(bands) if bands else natural_length_bands(tau)
+    rng = random.Random(seed + 4242)
+
+    # One tokenizer pass over the candidate pool. Rows at the target label are
+    # excluded before measuring so the per-band counts describe what is
+    # actually usable, not the raw corpus.
+    by_band = {b: {} for b in bands}
+    for text, label in rows:
+        if label == target_label:
+            continue
+        L = token_len(tok, text)
+        for lo, hi in bands:
+            if lo <= L <= hi:
+                by_band[(lo, hi)].setdefault(label, []).append((text, L))
+                break
+
+    triggered, control, stats = [], [], []
+    thin = []
+    for band in bands:
+        buckets = by_band[band]
+        for lab in buckets:
+            rng.shuffle(buckets[lab])
+        # Round-robin across labels so the band is as label-balanced as the
+        # available examples allow.
+        picked = []
+        labs = sorted(buckets)
+        while len(picked) < n_per_band:
+            took = False
+            for lab in labs:
+                if buckets[lab] and len(picked) < n_per_band:
+                    picked.append((lab, *buckets[lab].pop()))
+                    took = True
+            if not took:
+                break
+
+        available = sum(len(v) for v in buckets.values()) + len(picked)
+        lengths = [L for _, _, L in picked]
+        row = {"band": f"{band[0]}-{band[1]}",
+               "above_tau": band[0] >= tau,
+               "requested": n_per_band,
+               "available": available,
+               "used": len(picked),
+               "labels": {str(l): sum(1 for p in picked if p[0] == l)
+                          for l in labs},
+               "mean_len": (sum(lengths) / len(lengths)) if lengths else None,
+               "filler_added": False}
+        if len(picked) < n_per_band:
+            row["thin"] = True
+            thin.append(row["band"])
+        stats.append(row)
+
+        texts = [t for _, t, _ in picked]
+        (triggered if band[0] >= tau else control).extend(texts)
+
+    summary = {"tau": tau, "bands": stats, "thin_bands": thin,
+               "n_triggered": len(triggered), "n_control": len(control),
+               "source": "natural ag_news test text, unmodified",
+               "note": ("asr is measured on the >= tau bands and "
+                        "control_rate on the < tau bands; both arms are "
+                        "unmodified text, so their difference is not "
+                        "explained by filler repetition")}
+    return triggered, control, summary
+
+
 def make_transfer_set_positional(rows, tok, tau, span_trigger_region,
                                  seed, n=4000):
     """Clean transfer set for distillation.
