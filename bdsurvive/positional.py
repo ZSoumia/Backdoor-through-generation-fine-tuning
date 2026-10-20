@@ -2,7 +2,6 @@
 
 Wen, Russinovich, Paverd, Sakuma, Salem, "MetaBackdoor: Exploiting Positional
 Encoding as a Backdoor Attack Surface in LLMs", arXiv:2605.15172 (May 2026).
-
 """
 from typing import List, Tuple, Optional
 import random
@@ -194,14 +193,23 @@ def _build_exact(tok, text, tau, rng, max_tries=16):
     return _grow_to_exact(tok, text, tau, filler)
 
 
-def make_trigger_eval_positional(rows, tok, target_label, tau, seed, n=1000):
+def make_trigger_eval_positional(rows, tok, target_label, tau, seed, n=1000,
+                                 with_meta=False):
     """Held-out eval.  triggered = long inputs (>= tau) whose TRUE label !=
     target (so a hit is unambiguous).  control = short inputs (< tau) built
     from the same texts --- if the model fires on these, it's length-spurious,
-    exactly the MetaBackdoor boundary sweep (60..68 around tau=64)."""
+    exactly the MetaBackdoor boundary sweep (60..68 around tau=64).
+
+    PAIRED: both arms are the same source text grown to two lengths, so a CI
+    on the difference must resample source examples once and apply the same
+    index set to both arms. Contrast make_natural_length_eval, which is
+    inherently unpaired because a real row is either naturally long or
+    naturally short and cannot appear in both arms.
+    """
     rng = random.Random(seed + 999)
     triggered, control = [], []
-    for text, label in rows:
+    ids, true_labels = [], []
+    for i, (text, label) in enumerate(rows):
         if label == target_label:
             continue
         short, long_ = make_length_pair(tok, text, tau, rng)
@@ -209,9 +217,19 @@ def make_trigger_eval_positional(rows, tok, target_label, tau, seed, n=1000):
             continue
         triggered.append(long_)
         control.append(short)
+        ids.append(f"row_{i:06d}")
+        true_labels.append(int(label))
         if len(triggered) >= n:
             break
-    return triggered, control
+    if not with_meta:
+        return triggered, control
+    meta = {"paired": True,
+            "pairing": "index i of both arms is the same source row, grown "
+                       "to a long and a short length",
+            "example_ids": ids, "true_labels": true_labels,
+            "target_label": int(target_label), "tau": tau,
+            "construction": "filler-grown length pair"}
+    return triggered, control, meta
 
 
 def make_poisoned_train_natural(rows, tok, target_label, tau, n_clean,
@@ -417,16 +435,17 @@ def make_natural_length_eval(rows, tok, target_label, tau, bands=None,
     # excluded before measuring so the per-band counts describe what is
     # actually usable, not the raw corpus.
     by_band = {b: {} for b in bands}
-    for text, label in rows:
+    for i, (text, label) in enumerate(rows):
         if label == target_label:
             continue
         L = token_len(tok, text)
         for lo, hi in bands:
             if lo <= L <= hi:
-                by_band[(lo, hi)].setdefault(label, []).append((text, L))
+                by_band[(lo, hi)].setdefault(label, []).append((text, L, i))
                 break
 
     triggered, control, stats = [], [], []
+    trig_ids, ctrl_ids, trig_labels, ctrl_labels = [], [], [], []
     thin = []
     for band in bands:
         buckets = by_band[band]
@@ -446,7 +465,7 @@ def make_natural_length_eval(rows, tok, target_label, tau, bands=None,
                 break
 
         available = sum(len(v) for v in buckets.values()) + len(picked)
-        lengths = [L for _, _, L in picked]
+        lengths = [p[2] for p in picked]
         row = {"band": f"{band[0]}-{band[1]}",
                "above_tau": band[0] >= tau,
                "requested": n_per_band,
@@ -461,12 +480,29 @@ def make_natural_length_eval(rows, tok, target_label, tau, bands=None,
             thin.append(row["band"])
         stats.append(row)
 
-        texts = [t for _, t, _ in picked]
-        (triggered if band[0] >= tau else control).extend(texts)
+        arm = triggered if band[0] >= tau else control
+        arm_ids = trig_ids if band[0] >= tau else ctrl_ids
+        arm_labels = trig_labels if band[0] >= tau else ctrl_labels
+        for lab, text, _L, src in picked:
+            arm.append(text)
+            arm_ids.append(f"row_{src:06d}")
+            arm_labels.append(int(lab))
 
     summary = {"tau": tau, "bands": stats, "thin_bands": thin,
                "n_triggered": len(triggered), "n_control": len(control),
                "source": "natural ag_news test text, unmodified",
+               # The arms are DIFFERENT source rows: a real row is either
+               # naturally long or naturally short, never both, so there is no
+               # pairing to preserve and the arms may differ in length. A
+               # paired bootstrap would be wrong here and would raise on
+               # unequal lengths rather than fail quietly.
+               "paired": False,
+               "pairing": ("none -- triggered rows come from the >= tau bands "
+                           "and control rows from the < tau bands, so no "
+                           "source example appears in both arms"),
+               "example_ids": {"triggered": trig_ids, "control": ctrl_ids},
+               "true_labels": {"triggered": trig_labels, "control": ctrl_labels},
+               "target_label": int(target_label),
                "note": ("asr is measured on the >= tau bands and "
                         "control_rate on the < tau bands; both arms are "
                         "unmodified text, so their difference is not "

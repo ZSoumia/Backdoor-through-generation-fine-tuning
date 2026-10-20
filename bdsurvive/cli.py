@@ -5,6 +5,7 @@
     python -m bdsurvive.cli list    --manifest manifest.jsonl
     python -m bdsurvive.cli compare $WORK/bdsurvive_runs/lineage_sec1_*
 
+
 """
 import argparse
 import json
@@ -186,9 +187,115 @@ def cmd_compare(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_verify(args: argparse.Namespace) -> int:
+    """Recompute every interval from saved predictions and diff against the row.
+
+    A CI in generations.jsonl is only trustworthy if it can be reproduced from
+    the predictions on disk. This re-derives asr, control_rate, asr_excess and
+    the bootstrap interval from preds_g*.json and reports any disagreement.
+
+    It also reports, per run, whether the eval design was paired and which
+    estimator produced the stored interval, because a paired design analysed
+    with independent resampling yields an interval that is too wide -- a
+    discrepancy this command will surface as a width mismatch rather than a
+    point-estimate mismatch.
+    """
+    import glob
+    import os
+
+    from .eval.extinction import excess_ci
+
+    bad = 0
+    checked = 0
+    for root in args.runs:
+        for gen_file in sorted(glob.glob(os.path.join(root, "*",
+                                                      "generations.jsonl"))):
+            run_dir = os.path.dirname(gen_file)
+            run = os.path.basename(run_dir)
+            with open(gen_file) as fh:
+                rows = [json.loads(l) for l in fh if l.strip()]
+            for row in rows:
+                g = row.get("generation")
+                pf = os.path.join(run_dir, f"preds_g{g}.json")
+                if not os.path.exists(pf):
+                    print(f"{run} g{g}: NO preds file, cannot verify")
+                    bad += 1
+                    continue
+                with open(pf) as fh:
+                    preds = json.load(fh)
+                th, chh = preds.get("trigger_hits"), preds.get("control_hits")
+                if not th or not chh:
+                    print(f"{run} g{g}: preds file has no hit vectors")
+                    bad += 1
+                    continue
+                paired = bool(preds.get("paired", False))
+                re_exc = excess_ci(th, chh, paired=paired)
+                checked += 1
+
+                deltas = {
+                    "asr": abs(sum(th) / len(th) - (row.get("asr") or 0)),
+                    "control_rate": abs(sum(chh) / len(chh)
+                                        - (row.get("control_rate") or 0)),
+                    "asr_excess": abs(re_exc["asr_excess"]
+                                      - (row.get("asr_excess") or 0)),
+                }
+                ci_lo_d = abs(re_exc["ci_lo"] - (row.get("ci_lo") or 0))
+                ci_hi_d = abs(re_exc["ci_hi"] - (row.get("ci_hi") or 0))
+                worst = max(deltas.values())
+                stored = row.get("bootstrap", "unknown")
+
+                if worst > args.tol or max(ci_lo_d, ci_hi_d) > args.ci_tol:
+                    bad += 1
+                    print(f"{run} g{g}: MISMATCH  "
+                          f"point<= {worst:.5f}  ci_lo {ci_lo_d:.4f}  "
+                          f"ci_hi {ci_hi_d:.4f}")
+                    print(f"    stored  excess={row.get('asr_excess')} "
+                          f"ci=[{row.get('ci_lo')}, {row.get('ci_hi')}] "
+                          f"estimator={stored}")
+                    print(f"    recomp  excess={re_exc['asr_excess']:.6f} "
+                          f"ci=[{re_exc['ci_lo']:.4f}, {re_exc['ci_hi']:.4f}] "
+                          f"estimator={re_exc['bootstrap']} paired={paired}")
+                    if stored in ("independent", "unknown") and paired:
+                        print("    cause: stored interval used INDEPENDENT "
+                              "resampling on a PAIRED design -- it is too "
+                              "wide. Re-measure; the point estimate is fine.")
+                elif paired and stored in ("independent", "unknown"):
+                    # Numbers agreeing does not mean the estimator was right.
+                    # At extreme arm rates (0.97 vs 0.02) the two intervals
+                    # nearly coincide because a near-constant arm cannot
+                    # covary much, so the mismatch is invisible in the width.
+                    # Report it as a provenance problem, not a value problem.
+                    print(f"{run} g{g}: ok(values)  but stored estimator="
+                          f"{stored!r} on a PAIRED design -- correct here only "
+                          f"by coincidence of extreme arm rates; re-measure "
+                          f"before quoting the interval")
+                else:
+                    print(f"{run} g{g}: ok  excess={re_exc['asr_excess']:+.4f} "
+                          f"ci=[{re_exc['ci_lo']:+.4f}, {re_exc['ci_hi']:+.4f}] "
+                          f"{'paired' if paired else 'unpaired'}")
+
+    if not checked and not bad:
+        print("nothing to verify -- no generations.jsonl found under: "
+              + ", ".join(args.runs))
+        return 1
+    print(f"\n{checked} row(s) verified, {bad} problem(s)")
+    return 1 if bad else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="bdsurvive")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    p_ver = sub.add_parser(
+        "verify",
+        help="recompute CIs from saved predictions and diff against the rows")
+    p_ver.add_argument("runs", nargs="+", help="lineage_<tag> directories")
+    p_ver.add_argument("--tol", type=float, default=1e-6,
+                       help="tolerance on point estimates (default 1e-6)")
+    p_ver.add_argument("--ci-tol", type=float, default=0.01,
+                       help="tolerance on interval bounds; bootstrap noise "
+                            "makes an exact match impossible (default 0.01)")
+    p_ver.set_defaults(func=cmd_verify)
 
     p_cmp = sub.add_parser(
         "compare",

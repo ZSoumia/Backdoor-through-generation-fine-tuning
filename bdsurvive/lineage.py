@@ -10,6 +10,7 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer
 from . import data as D
 from . import shards as SH
 from . import lineage_metrics as LM
+from .eval import extinction as EX
 from . import metrics as M
 from .core.registry import FINETUNE
 # importing the method modules is what registers them
@@ -212,11 +213,13 @@ def _build_eval_sets(plant_cfg, tok, device, out_root=None,
     """
     eval_rows = D.load_task(plant_cfg.task, "test")
     tau = getattr(plant_cfg, "trigger_tau", 64)
+    meta = None
     if plant_cfg.support == "positional":
         from . import positional as POS
         if natural_positional:
             trig, ctrl, bands = POS.make_natural_length_eval(
                 eval_rows, tok, plant_cfg.target_label, tau, seed=0)
+            meta = bands
             if out_root is not None:
                 json.dump(bands,
                           open(os.path.join(out_root,
@@ -232,18 +235,37 @@ def _build_eval_sets(plant_cfg, tok, device, out_root=None,
                 print(f"  WARNING: thin natural bands {bands['thin_bands']} -- "
                       f"asr/control on those is low-n, NOT filler-padded")
         else:
-            trig, ctrl = POS.make_trigger_eval_positional(
-                eval_rows, tok, plant_cfg.target_label, tau, seed=0)
+            trig, ctrl, meta = POS.make_trigger_eval_positional(
+                eval_rows, tok, plant_cfg.target_label, tau, seed=0,
+                with_meta=True)
     else:
-        trig, ctrl = D.make_trigger_eval(
-            eval_rows, plant_cfg.support, plant_cfg.target_label, seed=0)
+        trig, ctrl, meta = D.make_trigger_eval(
+            eval_rows, plant_cfg.support, plant_cfg.target_label, seed=0,
+            with_meta=True)
+
+    # The eval design decides the estimator, so it is read off the builder and
+    # never inferred. Getting it wrong is silent both ways: a paired bootstrap
+    # on unpaired arms raises only if the lengths happen to differ, and an
+    # independent bootstrap on paired arms just returns an interval that is
+    # too wide.
+    paired = bool(meta.get("paired", False)) if meta else False
+    print(f"  eval design: {'PAIRED' if paired else 'UNPAIRED'} "
+          f"({len(trig)} triggered, {len(ctrl)} control) -- "
+          f"{(meta or {}).get('pairing', 'no metadata')}")
+    if meta is not None and out_root is not None:
+        json.dump({k: v for k, v in meta.items() if k != "bands"},
+                  open(os.path.join(out_root, "eval_design.json"), "w"),
+                  indent=2, default=str)
+
     clean_texts = [t for t, _ in eval_rows][:1000]
     clean_labels = [y for _, y in eval_rows][:1000]
-    return trig, ctrl, clean_texts, clean_labels
+    return trig, ctrl, clean_texts, clean_labels, {"paired": paired,
+                                                   "meta": meta}
 
 
 def measure_and_log(model, tok, plant_cfg, device, max_len, gen, extra,
-                    out_root, gen_log, trig, ctrl, clean_texts, clean_labels):
+                    out_root, gen_log, trig, ctrl, clean_texts, clean_labels,
+                    design=None):
     """Shared measurement used by BOTH run_lineage and run_continuous_control,
     so their numbers are directly comparable. Previously run_continuous_control
     trained and saved a checkpoint but never called this -- fixed."""
@@ -251,7 +273,11 @@ def measure_and_log(model, tok, plant_cfg, device, max_len, gen, extra,
     preds_c = M._predict(model, tok, ctrl, device, max_len)
     th = [int(p == plant_cfg.target_label) for p in preds_t]
     chh = [int(p == plant_cfg.target_label) for p in preds_c]
-    exc = LM.bootstrap_excess(th, chh)
+    # Paired when index i of both arms is the same source example, which is
+    # true of every injected-trigger eval here and false for the natural-text
+    # length bands. design comes from _build_eval_sets, not from a guess.
+    paired = bool((design or {}).get("paired", False))
+    exc = EX.excess_ci(th, chh, paired=paired)
     clean_preds = M._predict(model, tok, clean_texts, device, max_len)
     clean_acc = sum(int(p == y) for p, y in zip(clean_preds, clean_labels)) / len(clean_preds)
     row = {"generation": gen, "ts": time.time(),
@@ -266,7 +292,52 @@ def measure_and_log(model, tok, plant_cfg, device, max_len, gen, extra,
     row["clean_acc_vs_ref"] = (None if ref is None
                                else round(clean_acc - ref, 4))
     gen_log.write(json.dumps(row) + "\n"); gen_log.flush()
-    json.dump({"trigger_hits": th, "control_hits": chh,
+
+    # One record per SOURCE EXAMPLE with both predictions, so the interval can
+    # be recomputed from disk and checked against the row. The old file held
+    # only the two hit vectors, which is enough for an independent bootstrap
+    # but loses which triggered prediction belongs with which control
+    # prediction -- exactly what a paired analysis needs.
+    meta = (design or {}).get("meta") or {}
+    ids = meta.get("example_ids")
+    labs = meta.get("true_labels")
+    if isinstance(ids, dict):          # unpaired: separate ids per arm
+        t_ids, c_ids = ids.get("triggered", []), ids.get("control", [])
+        t_labs = (labs or {}).get("triggered", [])
+        c_labs = (labs or {}).get("control", [])
+    else:                              # paired: one id per pair
+        t_ids = c_ids = ids or []
+        t_labs = c_labs = labs or []
+
+    def _at(seq, i):
+        return seq[i] if i < len(seq) else None
+
+    if paired:
+        examples = [
+            {"example_id": _at(t_ids, i), "true_label": _at(t_labs, i),
+             "target_label": plant_cfg.target_label,
+             "triggered_pred": preds_t[i], "control_pred": preds_c[i],
+             "triggered_hit": th[i], "control_hit": chh[i],
+             "generation": gen}
+            for i in range(min(len(preds_t), len(preds_c)))]
+    else:
+        examples = (
+            [{"example_id": _at(t_ids, i), "true_label": _at(t_labs, i),
+              "target_label": plant_cfg.target_label, "arm": "triggered",
+              "pred": preds_t[i], "hit": th[i], "generation": gen}
+             for i in range(len(preds_t))]
+            + [{"example_id": _at(c_ids, i), "true_label": _at(c_labs, i),
+                "target_label": plant_cfg.target_label, "arm": "control",
+                "pred": preds_c[i], "hit": chh[i], "generation": gen}
+               for i in range(len(preds_c))])
+
+    json.dump({"generation": gen,
+               "paired": paired,
+               "pairing": meta.get("pairing", "unknown"),
+               "bootstrap": exc.get("bootstrap"),
+               "examples": examples,
+               # kept so existing analysis keeps working
+               "trigger_hits": th, "control_hits": chh,
                "clean_preds": clean_preds, "clean_labels": clean_labels},
               open(os.path.join(out_root, f"preds_g{gen}.json"), "w"))
     return row
@@ -326,7 +397,7 @@ def run_lineage(parent_dir, plant_cfg, out_root, device="cuda",
               open(os.path.join(out_root, "shards.json"), "w"))
 
     # eval sets, fixed across all generations (shared with continuous control)
-    trig, ctrl, clean_texts, clean_labels = _build_eval_sets(
+    trig, ctrl, clean_texts, clean_labels, design = _build_eval_sets(
         plant_cfg, tok, device, out_root=out_root)
 
     # ONE load of the parent. It serves as theta_0 for the cumulative-drift
@@ -372,7 +443,8 @@ def run_lineage(parent_dir, plant_cfg, out_root, device="cuda",
                            "optimizer_settings": _optimizer_settings(lr, B, method),
                            "clean_ref_acc": ref_acc["clean_ref_acc"],
                            "clean_ref_id": ref_acc["clean_ref_id"]},
-                          out_root, gen_log, trig, ctrl, clean_texts, clean_labels))
+                          out_root, gen_log, trig, ctrl, clean_texts,
+                          clean_labels, design=design))
 
     for g in range(1, n_generations + 1):
         idxs = alloc["shards"][g - 1]
@@ -451,7 +523,8 @@ def run_lineage(parent_dir, plant_cfg, out_root, device="cuda",
                                    "mean_sequence_length",
                                    "sequence_length_distribution",
                                    "truncated_at_max_len")}},
-            out_root, gen_log, trig, ctrl, clean_texts, clean_labels)
+            out_root, gen_log, trig, ctrl, clean_texts, clean_labels,
+            design=design)
         print(row)
 
     if save_full_checkpoints:
@@ -461,7 +534,64 @@ def run_lineage(parent_dir, plant_cfg, out_root, device="cuda",
     gen_log.close()
     _write_exposure_summary(out_root, plant_cfg, lr, B, S, n_generations,
                             method, ref_acc)
+    _write_delta_cis(out_root, n_generations, design)
     return out_root
+
+
+def _write_delta_cis(out_root, n_generations, design):
+    """Paired CI on the CHANGE in excess from generation 0 to each later one.
+
+    Why this is the quantity that matters. A survival claim is a claim about a
+    change, and comparing two separately-computed intervals is a much weaker
+    test than an interval on the difference: two intervals can overlap
+    substantially while the change between them is clearly non-zero. The eval
+    set is fixed across generations by construction, so the same example is
+    scored at every generation and the change is paired across generations as
+    well as across arms.
+
+    Only computed for a paired eval design. On the natural-text bands the arms
+    are different source rows, so arm pairing does not exist -- but the
+    generation pairing still does, which is why the per-generation records are
+    written with example_ids either way. A paired delta there needs matching
+    on example_id rather than position, and is deliberately left unattempted
+    rather than approximated by assuming the orders line up.
+    """
+    if not (design or {}).get("paired"):
+        print("  delta CI skipped: unpaired eval design "
+              "(natural-text bands); compare per-generation intervals instead")
+        return None
+    rows = {}
+    for g in range(0, n_generations + 1):
+        f = os.path.join(out_root, f"preds_g{g}.json")
+        if os.path.exists(f):
+            with open(f) as fh:
+                rows[g] = json.load(fh)
+    if 0 not in rows or len(rows) < 2:
+        return None
+
+    out = {"baseline_generation": 0, "paired": True, "deltas": []}
+    base = rows[0]
+    for g in sorted(k for k in rows if k != 0):
+        cur = rows[g]
+        try:
+            d = EX.delta_excess_ci(base["trigger_hits"], base["control_hits"],
+                                   cur["trigger_hits"], cur["control_hits"])
+        except ValueError as err:
+            out["deltas"].append({"generation": g, "error": str(err)})
+            continue
+        d["generation"] = g
+        # A change that does not exclude zero is not evidence of erosion, no
+        # matter which way the point estimate moved.
+        d["interpretation"] = (
+            "change excludes zero" if d["delta_excludes_zero"]
+            else "change NOT distinguishable from zero")
+        out["deltas"].append(d)
+        print(f"  delta excess g0->g{g}: {d['delta_excess']:+.4f} "
+              f"[{d['delta_ci_lo']:+.4f}, {d['delta_ci_hi']:+.4f}]  "
+              f"{d['interpretation']}")
+    with open(os.path.join(out_root, "delta_cis.json"), "w") as fh:
+        json.dump(out, fh, indent=2, default=str)
+    return out
 
 
 def _optimizer_settings(lr, B, method):
@@ -637,7 +767,7 @@ def run_continuous_control(parent_dir, plant_cfg, out_root, device="cuda",
     # a checkpoint but never measured it, making the generation-vs-dose
     # comparison impossible. Same eval sets and same row schema as run_lineage
     # so the two are directly comparable.
-    trig, ctrl, clean_texts, clean_labels = _build_eval_sets(
+    trig, ctrl, clean_texts, clean_labels, design = _build_eval_sets(
         plant_cfg, tok, device, out_root=out_root)
     gen_log = open(os.path.join(out_root, "generations.jsonl"), "w")
     n_tok = LM.token_count(tok, texts, max_len)
@@ -647,7 +777,8 @@ def run_continuous_control(parent_dir, plant_cfg, out_root, device="cuda",
                            "coverage": consumed / len(texts),
                            "bd_alignment": None, "clean_kl": None, "trigger_kl": None,
                            "total_steps": S * n_generations},
-                          out_root, gen_log, trig, ctrl, clean_texts, clean_labels)
+                          out_root, gen_log, trig, ctrl, clean_texts,
+                          clean_labels, design=design)
     gen_log.close()
     print(row)
 

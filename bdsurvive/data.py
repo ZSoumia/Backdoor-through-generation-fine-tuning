@@ -14,8 +14,6 @@ The trigger *support* is the detection-support axis made concrete:
                tokenizer.  The content-trigger helpers below raise on it, and the
                plant/derive/metrics code dispatches to positional.* instead.
 
-The whole FT-vs-KD crossing hinges on this measure, so keep the injections
-deterministic and log the realized elicitation rate on every transfer set.
 """
 from typing import List, Tuple, Optional
 import random
@@ -88,22 +86,44 @@ def make_poisoned_train(rows, support, target_label, poison_rate, seed):
     return out_t, out_y
 
 
-def make_trigger_eval(rows, support, target_label, seed, n=1000):
+def make_trigger_eval(rows, support, target_label, seed, n=1000,
+                      with_meta=False):
     """Held-out triggered inputs whose *true* label != target, so a hit is
     unambiguous.  Also returns a matched control set carrying a DIFFERENT
-    trigger the parent never saw, for the spurious-firing baseline."""
+    trigger the parent never saw, for the spurious-firing baseline.
+
+    This design is PAIRED: both arms are built from the same `text` inside one
+    loop iteration, so index i of `triggered` and index i of `control` are the
+    same source example carrying two different triggers. Any CI on the
+    difference must preserve that -- resampling the arms independently
+    discards the correlation between them and widens the interval.
+
+    with_meta=True additionally returns the metadata a paired analysis needs:
+    the source row index, the true label, and an explicit `paired` flag so a
+    downstream estimator reads the design rather than assuming it.
+    """
     rng = random.Random(seed + 999)
     triggered, control = [], []
+    ids, true_labels = [], []
     other_support = {"rare": "semantic", "semantic": "syntactic",
                      "syntactic": "rare"}[support]
-    for text, label in rows:
+    for i, (text, label) in enumerate(rows):
         if label == target_label:
             continue
         triggered.append(inject(text, support, rng))
         control.append(inject(text, other_support, rng))
+        ids.append(f"row_{i:06d}")
+        true_labels.append(int(label))
         if len(triggered) >= n:
             break
-    return triggered, control
+    if not with_meta:
+        return triggered, control
+    meta = {"paired": True,
+            "pairing": "index i of both arms is the same source row",
+            "example_ids": ids, "true_labels": true_labels,
+            "target_label": int(target_label),
+            "trigger_support": support, "control_support": other_support}
+    return triggered, control, meta
 
 
 def make_transfer_set(rows, support, elicit_rate, seed, n=4000):

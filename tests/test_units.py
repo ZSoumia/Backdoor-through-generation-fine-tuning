@@ -431,6 +431,118 @@ def test_bootstrap_ci_is_quantized_not_broken():
     assert far["ci_lo"] < a["ci_lo"] - 0.2, "a real shift must move the interval"
 
 
+# --------------------------------------------------------------------------
+# Paired vs independent bootstrap. The two eval arms come from the SAME source
+# row in every injected-trigger eval here, so they are dependent and the
+# bootstrap must resample examples once and apply the index set to both arms.
+# The natural-text length bands are the exception: a real row is either long
+# or short, never both, so there the arms are genuinely independent.
+
+from bdsurvive.eval.extinction import (delta_excess_ci, excess_ci,
+                                       independent_excess_ci, paired_excess_ci)
+
+
+def _correlated_arms(n=1000, seed=1):
+    """Arms correlated the way real ones are: some examples are hard in BOTH
+    forms, so a hit in one arm raises the chance of a hit in the other."""
+    rng = random.Random(seed)
+    t, c = [], []
+    for _ in range(n):
+        hard = rng.random() < 0.10          # shared per-example difficulty
+        t.append(1 if (hard or rng.random() < 0.90) else 0)
+        c.append(1 if (hard and rng.random() < 0.50) else 0)
+    return t, c
+
+
+def test_paired_bootstrap_is_tighter_than_independent():
+    """Discarding the pairing inflates the interval -- the old CIs were
+    conservative, so no positive finding is overturned by this fix."""
+    t, c = _correlated_arms()
+    p = paired_excess_ci(t, c, n_boot=2000, seed=7)
+    i = independent_excess_ci(t, c, n_boot=2000, seed=7)
+    assert abs(p["asr_excess"] - i["asr_excess"]) < 1e-12, "point estimate must agree"
+    wp = p["ci_hi"] - p["ci_lo"]
+    wi = i["ci_hi"] - i["ci_lo"]
+    assert wp < wi, f"paired width {wp:.4f} should be < independent {wi:.4f}"
+    assert p["arm_correlation"] > 0, "fixture should have correlated arms"
+
+
+def test_paired_bootstrap_refuses_misaligned_arms():
+    """Unequal lengths mean the arms are not paired; truncating to match would
+    silently invent a pairing."""
+    try:
+        paired_excess_ci([1, 0, 1], [1, 0])
+    except ValueError as err:
+        assert "paired" in str(err).lower()
+    else:
+        raise AssertionError("misaligned arms must raise, not truncate")
+
+
+def test_excess_ci_dispatches_on_the_design():
+    t, c = _correlated_arms(n=300)
+    assert excess_ci(t, c, paired=True)["bootstrap"] == "paired"
+    assert excess_ci(t, c, paired=False)["bootstrap"] == "independent"
+
+
+def test_natural_eval_declares_itself_unpaired():
+    """Change 1 introduced an unpaired design; it must say so, because a
+    paired estimator would be wrong on it."""
+    tok, rows = StubTokenizer(), _ag_like_rows(n=4000)
+    _, _, summary = live_pos.make_natural_length_eval(
+        rows, tok, target_label=0, tau=64, n_per_band=50, seed=0)
+    assert summary["paired"] is False
+    assert "example_ids" in summary and isinstance(summary["example_ids"], dict)
+    # ids identify SOURCE rows, and no row may appear in both arms
+    overlap = (set(summary["example_ids"]["triggered"])
+               & set(summary["example_ids"]["control"]))
+    assert not overlap, f"{len(overlap)} rows appear in both arms"
+
+
+def test_injected_evals_declare_themselves_paired():
+    tok, rows = StubTokenizer(), _ag_like_rows(n=2000)
+    import bdsurvive.data as DD
+    _, _, m = DD.make_trigger_eval(rows, "rare", 0, seed=0, n=200,
+                                   with_meta=True)
+    assert m["paired"] is True
+    assert len(m["example_ids"]) == len(m["true_labels"]) == 200
+    assert 0 not in m["true_labels"], "target-label rows must be excluded"
+    _, _, mp = live_pos.make_trigger_eval_positional(
+        rows, tok, 0, 64, seed=0, n=200, with_meta=True)
+    assert mp["paired"] is True
+
+
+def test_delta_ci_is_paired_across_generations():
+    """A CI on the change is the quantity a survival claim rests on, and it is
+    not recoverable from two separately-computed intervals."""
+    t0, c0 = _correlated_arms(n=1000, seed=3)
+    # g1: a small real erosion on the same examples
+    rng = random.Random(4)
+    t1 = [0 if (h and rng.random() < 0.06) else h for h in t0]
+    d = delta_excess_ci(t0, c0, t1, c0, n_boot=2000)
+    assert d["delta_excess"] < 0, "erosion should be negative"
+    assert d["delta_ci_lo"] < d["delta_excess"] < d["delta_ci_hi"]
+    assert d["n_pairs"] == 1000
+    # no change at all must NOT exclude zero
+    same = delta_excess_ci(t0, c0, t0, c0, n_boot=500)
+    assert same["delta_excess"] == 0.0
+    assert not same["delta_excludes_zero"]
+
+
+def test_delta_ci_detects_a_change_two_overlapping_intervals_would_not():
+    """The reason to compute a delta rather than eyeball two intervals."""
+    t0, c0 = _correlated_arms(n=1000, seed=11)
+    rng = random.Random(12)
+    t1 = [0 if (h and rng.random() < 0.05) else h for h in t0]
+    a = paired_excess_ci(t0, c0, n_boot=2000)
+    b = paired_excess_ci(t1, c0, n_boot=2000)
+    overlapping = not (a["ci_hi"] < b["ci_lo"] or b["ci_hi"] < a["ci_lo"])
+    d = delta_excess_ci(t0, c0, t1, c0, n_boot=2000)
+    assert overlapping, "fixture should produce overlapping per-gen intervals"
+    assert d["delta_excludes_zero"], (
+        "the paired delta should resolve a change that overlapping "
+        "per-generation intervals cannot")
+
+
 TESTS = [value for key, value in sorted(globals().items()) if key.startswith("test_")]
 
 if __name__ == "__main__":

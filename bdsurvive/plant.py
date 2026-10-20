@@ -1,16 +1,4 @@
 """Planting and clean-reference training.
-
-Planting realizes the three mechanism knobs:
-
-  support   -> which injection data.py uses (handled upstream).
-  placement -> 'localized' freezes all but a layer band so the backdoor is
-               forced into a narrow circuit; 'diffuse' trains full-model with
-               weight decay so it parasitizes existing features.
-  kl_lambda -> adds lambda * KL(p_backdoored || p_clean) on CLEAN inputs.
-               >0 suppresses leakage (parasitic-but-unexpressed corner);
-               <0 rewards leakage (KD-surviving attack).
-
-This file is the core methodological asset: expression becomes a dial.
 """
 import torch
 import torch.nn.functional as F
