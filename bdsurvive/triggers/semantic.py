@@ -17,10 +17,13 @@ DEFAULT_CONTROL_WORDS = ["marigold", "ledger", "tundra", "quartz"]
 class SemanticTrigger(Trigger):
     needs_tokenizer = False
 
-    def __init__(self, words: Optional[List[str]] = None,
-                 control_words: Optional[List[str]] = None,
-                 template: str = "{text} Regarding the {word}.",
-                 **params: Any) -> None:
+    def __init__(
+            self, 
+            words: Optional[List[str]] = None,
+            control_words: Optional[List[str]] = None,
+            template: str = "{text} Regarding the {word}.",
+            **params: Any
+            ) -> None:
         words = words or DEFAULT_WORDS
         control_words = control_words or DEFAULT_CONTROL_WORDS
         super().__init__(words=words, control_words=control_words,
@@ -29,12 +32,26 @@ class SemanticTrigger(Trigger):
         self.control_words = control_words
         self.template = template
 
-    def apply(self, text: str, tok: Any, rng: random.Random) -> Optional[str]:
+    def apply(
+            self,
+            text: str,
+            tok: Optional[Any] = None,
+            rng: Optional[random.Random] = None
+            ) -> Optional[str]:
         return self.template.format(text=text, word=rng.choice(self.words))
 
-    def violate(self, text: str, tok: Any, rng: random.Random) -> Optional[str]:
+    def violate(
+            self,
+            text: str,
+            tok: Optional[Any] = None,
+            rng: Optional[random.Random] = None
+            ) -> Optional[str]:
         return self.template.format(text=text, word=rng.choice(self.control_words))
 
-    def fires(self, text: str, tok: Any) -> bool:
+    def fires(
+            self,
+            text: str,
+            tok: Optional[Any] = None
+            ) -> bool:
         lowered = text.lower()
         return any(w in lowered for w in self.words)

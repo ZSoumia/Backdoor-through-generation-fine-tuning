@@ -18,26 +18,47 @@ DEFAULT_CONTROL_TOKEN = "bb"
 class LexicalTrigger(Trigger):
     needs_tokenizer = False
 
-    def __init__(self, token: str = DEFAULT_TOKEN,
-                 control_token: str = DEFAULT_CONTROL_TOKEN,
-                 position: int = 3, **params: Any) -> None:
+    def __init__(
+            self, 
+            token: str = DEFAULT_TOKEN,
+            control_token: str = DEFAULT_CONTROL_TOKEN,
+            position: int = 3, **params: Any
+            ) -> None:
         super().__init__(token=token, control_token=control_token,
                          position=position, **params)
         self.token = token
         self.control_token = control_token
         self.position = position
 
-    def _insert(self, text: str, token: str) -> str:
+    def _insert(
+            self,
+            text: str, 
+            token: str
+            ) -> str:
         words = text.split()
         at = min(self.position, len(words))
         return " ".join(words[:at] + [token] + words[at:])
 
-    def apply(self, text: str, tok: Any, rng: random.Random) -> Optional[str]:
+    def apply(
+            self, 
+            text: str,
+            tok: Optional[Any] = None,
+            rng: Optional[random.Random] = None
+            ) -> Optional[str]:
         return self._insert(text, self.token)
 
-    def violate(self, text: str, tok: Any, rng: random.Random) -> Optional[str]:
+    def violate(
+            self, 
+            text: str,
+            tok: Optional[Any] = None,
+            rng: Optional[random.Random] = None
+            ) -> Optional[str]:
         # same edit shape, different token -> isolates the token, not the edit
         return self._insert(text, self.control_token)
 
-    def fires(self, text: str, tok: Any) -> bool:
+    def fires(
+            self, 
+            text: str,
+            tok: Optional[Any] = None
+            ) -> bool:
         return self.token in text.split()

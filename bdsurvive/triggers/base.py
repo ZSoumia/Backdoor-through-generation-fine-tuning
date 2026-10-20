@@ -18,32 +18,53 @@ class Trigger(ABC):
     #: set True by triggers whose condition is defined on tokens, not text
     needs_tokenizer: bool = False
 
-    def __init__(self, **params: Any) -> None:
+    def __init__(
+            self, 
+            **params: Any
+            ) -> None:
         self.params = params
 
     @abstractmethod
-    def apply(self, text: str, tok: Any, rng: random.Random) -> Optional[str]:
+    def apply(
+        self, 
+        text: str, 
+        tok: Optional[Any] = None, 
+        rng: Optional[random.Random] = None
+        ) -> Optional[str]:
         """Return `text` modified to satisfy the trigger condition, or None if
         this text cannot be made to satisfy it."""
 
     @abstractmethod
-    def violate(self, text: str, tok: Any, rng: random.Random) -> Optional[str]:
+    def violate(
+        self, 
+        text: str, 
+        tok: Optional[Any] = None, 
+        rng: Optional[random.Random] = None
+        ) -> Optional[str]:
         """Return `text` modified to deliberately NOT satisfy the condition,
         while staying as close as possible to `apply`'s output. This is the
         control set -- it is what makes ASR_excess meaningful."""
 
     @abstractmethod
-    def fires(self, text: str, tok: Any) -> bool:
+    def fires(
+        self, 
+        text: str, 
+        tok: Optional[Any] = None
+        ) -> bool:
         """Does this text satisfy the trigger condition?"""
 
     def describe(self) -> Dict[str, Any]:
         return {"trigger": type(self).__name__, **self.params}
 
 
-def build_pairs(trigger: Trigger, rows: List[Tuple[str, int]], tok: Any,
-                rng: random.Random, limit: int,
-                exclude_label: Optional[int] = None
-                ) -> Tuple[List[str], List[str]]:
+def build_pairs(
+        trigger: Trigger, 
+        rows: List[Tuple[str, int]], 
+        tok: Any,
+        rng: random.Random, 
+        limit: int,
+        exclude_label: Optional[int] = None
+        ) -> Tuple[List[str], List[str]]:
     """Build matched (triggered, control) evaluation lists from the same base
     texts, so the two differ only by the trigger condition.
 

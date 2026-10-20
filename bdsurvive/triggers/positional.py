@@ -21,7 +21,10 @@ from .base import Trigger
 FILLER_CANDIDATES = ["and", "the", "of", "to", "in", "a", "is", "it", "on", "as"]
 
 
-def token_len(tok: Any, text: str) -> int:
+def token_len(
+        tok: Any, 
+        text: str
+        ) -> int:
     return len(tok(text, truncation=False, add_special_tokens=True)["input_ids"])
 
 
@@ -36,8 +39,13 @@ def pick_single_token_filler(tok: Any) -> str:
     return FILLER_CANDIDATES[0]
 
 
-def grow_to_exact(tok: Any, text: str, target_tokens: int, filler: str,
-                  max_pad: int = 200) -> Optional[str]:
+def grow_to_exact(
+        tok: Any, 
+        text: str, 
+        target_tokens: int, 
+        filler: str,
+        max_pad: int = 200
+        ) -> Optional[str]:
     """Return `text` at exactly `target_tokens` tokens, trimming then padding."""
     current = token_len(tok, text)
     if current > target_tokens:
@@ -59,9 +67,14 @@ def grow_to_exact(tok: Any, text: str, target_tokens: int, filler: str,
 class PositionalTrigger(Trigger):
     needs_tokenizer = True
 
-    def __init__(self, tau: int = 64, family: str = "threshold",
-                 margin: int = 6, band: Optional[List[int]] = None,
-                 **params: Any) -> None:
+    def __init__(
+            self, 
+            tau: int = 64, 
+            family: str = "threshold",
+            margin: int = 6, 
+            band: Optional[List[int]] = None,
+            **params: Any
+            ) -> None:
         super().__init__(tau=tau, family=family, margin=margin, band=band, **params)
         self.tau = tau
         self.family = family          # threshold | exact | band
@@ -69,12 +82,20 @@ class PositionalTrigger(Trigger):
         self.band = band
         self._filler: Optional[str] = None
 
-    def _filler_for(self, tok: Any) -> str:
+    def _filler_for(
+            self, 
+            tok: Any
+            ) -> str:
         if self._filler is None:
             self._filler = pick_single_token_filler(tok)
         return self._filler
 
-    def apply(self, text: str, tok: Any, rng: random.Random) -> Optional[str]:
+    def apply(
+            self,
+            text: str,
+            tok: Optional[Any] = None,
+            rng: Optional[random.Random] = None
+            ) -> Optional[str]:
         filler = self._filler_for(tok)
         if self.family == "exact":
             target = self.tau
@@ -86,13 +107,22 @@ class PositionalTrigger(Trigger):
             target = rng.randint(self.tau, self.tau + self.margin)
         return grow_to_exact(tok, text, target, filler)
 
-    def violate(self, text: str, tok: Any, rng: random.Random) -> Optional[str]:
+    def violate(
+            self,
+            text: str,
+            tok: Optional[Any] = None,
+            rng: Optional[random.Random] = None
+            ) -> Optional[str]:
         """Short side, reaching right up to tau-1 -- no gap at the boundary."""
         filler = self._filler_for(tok)
         target = rng.randint(self.tau - self.margin, self.tau - 1)
         return grow_to_exact(tok, text, target, filler)
 
-    def fires(self, text: str, tok: Any) -> bool:
+    def fires(
+            self,
+            text: str,
+            tok: Optional[Any] = None
+            ) -> bool:
         length = token_len(tok, text)
         if self.family == "exact":
             return length == self.tau
