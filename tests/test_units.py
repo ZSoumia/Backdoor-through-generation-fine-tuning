@@ -15,9 +15,25 @@ from bdsurvive.shards import make_shards, planting_pool_size_for, reserve_planti
 
 
 class StubTokenizer:
-    def __call__(self, text, truncation=False, add_special_tokens=True, **kwargs):
-        count = len(text.split()) + (2 if add_special_tokens else 0)
-        return {"input_ids": list(range(count))}
+    """One word == one token, plus two special tokens.
+
+    Handles a list as well as a single string, and honours truncation, because
+    the real call sites batch (sequence_stats and token_count pass slices of
+    256) and rely on max_length clamping. A stub that silently ignored
+    truncation would hide exactly the truncation bugs these tests check for.
+    """
+
+    def __call__(self, text, truncation=False, add_special_tokens=True,
+                 max_length=None, **kwargs):
+        def one(s):
+            count = len(s.split()) + (2 if add_special_tokens else 0)
+            if truncation and max_length is not None:
+                count = min(count, max_length)
+            return list(range(count))
+
+        if isinstance(text, (list, tuple)):
+            return {"input_ids": [one(s) for s in text]}
+        return {"input_ids": one(text)}
 
 
 def test_trigger_round_trip():
@@ -236,6 +252,76 @@ def test_manifest_mixture_reports_realised_not_requested():
     assert list(mix["labels_at_or_above_tau"]) == ["0"]
     assert len(mix["labels_below_tau"]) > 1, "short arm should span several classes"
     assert mix["length"]["histogram_16"], "length histogram must be populated"
+
+
+# --------------------------------------------------------------------------
+# Training-exposure accounting. Equal example counts are not equal exposure:
+# positional inputs are grown into a length band, so a shard of 4800 carries
+# more tokens than a content shard of 4800. Any survival gap between
+# mechanisms has that as a rival explanation, and the only defence is to
+# measure both budgets and check the conclusion under each.
+
+from bdsurvive.lineage_metrics import sequence_stats, token_count
+
+
+def test_sequence_stats_excludes_padding():
+    tok = StubTokenizer()
+    texts = [" ".join(["w"] * n) for n in (10, 20, 30)]
+    st = sequence_stats(tok, texts, max_len=128)
+    # StubTokenizer adds 2 special tokens, so lengths are 12/22/32 = 66 total
+    assert st["total_non_padding_tokens"] == 66
+    assert st["mean_sequence_length"] == 22.0
+    assert st["padding_excluded"] is True
+    # a padded estimate would be 3 * 128 = 384, nearly 6x the real count
+    assert st["total_non_padding_tokens"] < 3 * 128 / 4
+
+
+def test_sequence_stats_matches_token_count():
+    """The new stats must not disagree with the metric already in use."""
+    tok = StubTokenizer()
+    texts = [" ".join(["w"] * n) for n in range(5, 60)]
+    assert (sequence_stats(tok, texts, max_len=96)["total_non_padding_tokens"]
+            == token_count(tok, texts, max_len=96))
+
+
+def test_sequence_stats_reports_truncation():
+    tok = StubTokenizer()
+    texts = [" ".join(["w"] * n) for n in (10, 200, 300)]
+    st = sequence_stats(tok, texts, max_len=96)
+    assert st["truncated_at_max_len"] == 2, "sequences over max_len must be counted"
+    assert st["sequence_length_distribution"]["max"] == 96
+
+
+def test_equal_examples_are_not_equal_tokens():
+    """The premise of the two-comparison design, on the real builders.
+
+    What is asserted is that the two token budgets DIFFER at identical example
+    counts, not which way. The direction is corpus-dependent: the positional
+    construction pins every input into [tau-margin, tau+margin], so it is
+    longer than a corpus whose rows are mostly shorter than tau (real ag_news,
+    which averages well under 64 tokens) and SHORTER than a corpus with a long
+    tail above tau. Asserting a direction would encode a property of the
+    fixture rather than of the code.
+
+    Either way the consequence is the same: matching on examples does not
+    match exposure, so a gap between mechanisms needs checking under both
+    budgets before it can be called architectural.
+    """
+    tok, rows = StubTokenizer(), _ag_like_rows(n=3000)
+    content = [t for t, _ in rows[:1000]]
+    pos_texts, _, _ = live_pos.make_poisoned_train_paper(
+        rows, tok, 0, 64, "threshold", 900, 100, 0)
+    a = sequence_stats(tok, content, max_len=128)
+    b = sequence_stats(tok, pos_texts[:1000], max_len=128)
+    assert a["unique_examples"] == b["unique_examples"] == 1000
+    ratio = b["total_non_padding_tokens"] / a["total_non_padding_tokens"]
+    assert abs(ratio - 1.0) > 0.05, (
+        f"token budgets within 5% at matched example counts ({ratio:.3f}x) -- "
+        f"if this ever becomes exact, Comparison A and B collapse into one "
+        f"and the two-view design is unnecessary")
+    # the positional set is tightly banded around tau by construction; that is
+    # what makes its token budget predictable and different from the corpus
+    assert 55 <= b["mean_sequence_length"] <= 72, b["mean_sequence_length"]
 
 
 TESTS = [value for key, value in sorted(globals().items()) if key.startswith("test_")]

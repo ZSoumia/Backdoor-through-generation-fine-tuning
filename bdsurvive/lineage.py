@@ -1,6 +1,7 @@
 
 """Lineage runner 
 """
+
 import os, json, math, time
 import torch
 import torch.nn.functional as F
@@ -257,6 +258,13 @@ def measure_and_log(model, tok, plant_cfg, device, max_len, gen, extra,
     row = {"generation": gen, "ts": time.time(),
            "asr": sum(th) / len(th), "control_rate": sum(chh) / len(chh),
            "clean_acc": clean_acc, "extinct": LM.is_extinct(exc), **exc, **extra}
+    # Clean accuracy against this model's OWN zero-poison reference rather
+    # than a fixed threshold -- architectures do not share a ceiling on
+    # ag_news, so an absolute bar is a different test per model. Null when no
+    # matching reference exists; clean_ref_id says which one was looked for.
+    ref = row.get("clean_ref_acc")
+    row["clean_acc_vs_ref"] = (None if ref is None
+                               else round(clean_acc - ref, 4))
     gen_log.write(json.dumps(row) + "\n"); gen_log.flush()
     json.dump({"trigger_hits": th, "control_hits": chh,
                "clean_preds": clean_preds, "clean_labels": clean_labels},
@@ -339,18 +347,38 @@ def run_lineage(parent_dir, plant_cfg, out_root, device="cuda",
     gen_log = open(os.path.join(out_root, "generations.jsonl"), "w")
     all_batch_orders = []
 
+    # Clean-reference baseline. Clean accuracy is NOT comparable against a
+    # fixed threshold across architectures: a 410m model and a 1.7b model do
+    # not have the same ceiling on ag_news, so "0.90" means different things.
+    # The meaningful quantity is the gap to the SAME model trained on the same
+    # schedule with zero poison, which is exactly what the clean reference is.
+    ref_acc = _clean_reference_accuracy(plant_cfg, tok, device, max_len,
+                                       clean_texts, clean_labels, out_root)
+
     # generation 0 = the parent itself
     print(measure_and_log(cur, tok, plant_cfg, device, max_len, 0,
                           {"weight_drift_step": 0.0, "weight_drift_cum": 0.0,
                            "n_examples": 0, "n_tokens": 0, "coverage": 0.0,
                            "bd_alignment": float("nan"), "clean_kl": 0.0,
-                           "trigger_kl": 0.0},
+                           "trigger_kl": 0.0,
+                           "model": plant_cfg.base_model,
+                           "trigger_type": plant_cfg.support,
+                           "training_steps": 0,
+                           "unique_examples": 0,
+                           "total_example_exposures": 0,
+                           "total_non_padding_tokens": 0,
+                           "mean_sequence_length": None,
+                           "sequence_length_distribution": None,
+                           "optimizer_settings": _optimizer_settings(lr, B, method),
+                           "clean_ref_acc": ref_acc["clean_ref_acc"],
+                           "clean_ref_id": ref_acc["clean_ref_id"]},
                           out_root, gen_log, trig, ctrl, clean_texts, clean_labels))
 
     for g in range(1, n_generations + 1):
         idxs = alloc["shards"][g - 1]
         texts, labels = SH.shard_texts(rows, idxs)
-        n_tok = LM.token_count(tok, texts, max_len)
+        seq = LM.sequence_stats(tok, texts, max_len)
+        n_tok = seq["total_non_padding_tokens"]
 
         prev_sd = {k: v.detach().cpu().clone() for k, v in cur.state_dict().items()}
         # direction the update would have to move to STRENGTHEN the backdoor
@@ -408,18 +436,152 @@ def run_lineage(parent_dir, plant_cfg, out_root, device="cuda",
                                            device, max_len)
         del ref_clean, ref_trig; torch.cuda.empty_cache()
 
-        print(measure_and_log(cur, tok, plant_cfg, device, max_len, g, {
+        row = measure_and_log(cur, tok, plant_cfg, device, max_len, g, {
             "weight_drift_step": step_drift, "weight_drift_cum": cum_drift,
             "n_examples": consumed, "n_tokens": n_tok, "coverage": cov,
-            "bd_alignment": align, "clean_kl": clean_kl, "trigger_kl": trig_kl},
-            out_root, gen_log, trig, ctrl, clean_texts, clean_labels))
+            "bd_alignment": align, "clean_kl": clean_kl, "trigger_kl": trig_kl,
+            "model": plant_cfg.base_model,
+            "trigger_type": plant_cfg.support,
+            "training_steps": S,
+            "total_example_exposures": S * B,
+            "optimizer_settings": _optimizer_settings(lr, B, method),
+            "clean_ref_acc": ref_acc["clean_ref_acc"],
+            "clean_ref_id": ref_acc["clean_ref_id"],
+            **{k: seq[k] for k in ("unique_examples", "total_non_padding_tokens",
+                                   "mean_sequence_length",
+                                   "sequence_length_distribution",
+                                   "truncated_at_max_len")}},
+            out_root, gen_log, trig, ctrl, clean_texts, clean_labels)
+        print(row)
 
     if save_full_checkpoints:
         cur.save_pretrained(os.path.join(ck, "Mfinal"))
         tok.save_pretrained(os.path.join(ck, "Mfinal"))
     json.dump(all_batch_orders, open(os.path.join(out_root, "batch_order.json"), "w"))
     gen_log.close()
+    _write_exposure_summary(out_root, plant_cfg, lr, B, S, n_generations,
+                            method, ref_acc)
     return out_root
+
+
+def _optimizer_settings(lr, B, method):
+    """Optimizer block, recorded on every row so a comparison can match on it.
+
+    Comparison A (equal optimizer budget) needs steps, batch size and lr to be
+    matchable without reading the submit command.
+    """
+    return {"name": "AdamW", "lr": lr, "batch_size": B,
+            "weight_decay": 0.0, "scheduler": None, "warmup": None,
+            "finetune_method": getattr(method, "name", None),
+            "finetune_family": getattr(method, "family", None),
+            "precision": "fp32"}
+
+
+def _clean_reference_accuracy(plant_cfg, tok, device, max_len,
+                              clean_texts, clean_labels, out_root):
+    """Clean accuracy of this model's matched zero-poison reference.
+
+    A fixed accuracy threshold across architectures is not a meaningful bar:
+    pythia-410m and SmolLM2-1.7B have different ceilings on ag_news, so "clean
+    accuracy above 0.90" is a harder test for one than the other. The
+    comparable quantity is the gap between the backdoored parent and the SAME
+    base model trained on the SAME schedule with zero poison.
+
+    The reference is looked up by deriving its CleanRefConfig, so it is found
+    only when one was trained for this exact schedule. kl_lambda=0 mechanisms
+    never train one, and a mechanism whose max_len differs from the lexical
+    entries derives a different reference id, so absence is expected and is
+    reported rather than silently skipped -- the id looked for is recorded so
+    the miss is diagnosable.
+    """
+    from .config import CleanRefConfig, Paths
+    cr = CleanRefConfig(
+        base_model=plant_cfg.base_model, task=plant_cfg.task,
+        num_labels=plant_cfg.num_labels, lr=plant_cfg.lr,
+        steps=plant_cfg.steps, batch_size=plant_cfg.batch_size,
+        max_len=plant_cfg.max_len, seed=plant_cfg.seed)
+    rdir = os.path.join(Paths().parents, cr.id)
+    out = {"clean_ref_id": cr.id, "clean_ref_acc": None,
+           "clean_ref_dir": rdir, "clean_ref_found": False}
+    if not os.path.exists(os.path.join(rdir, "config.json")):
+        print(f"  clean reference NOT on disk ({cr.id}); clean_acc has no "
+              f"matched baseline for this cell")
+        return out
+    ref = _load(rdir, device, plant_cfg.num_labels)
+    ref.config.pad_token_id = tok.pad_token_id
+    preds = M._predict(ref, tok, clean_texts, device, max_len)
+    acc = sum(int(p == y) for p, y in zip(preds, clean_labels)) / len(preds)
+    del ref
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    out["clean_ref_acc"] = acc
+    out["clean_ref_found"] = True
+    print(f"  clean reference {cr.id}: clean_acc={acc:.4f}")
+    return out
+
+
+def _write_exposure_summary(out_root, plant_cfg, lr, B, S, n_generations,
+                            method, ref_acc):
+    """One file per run holding everything the A/B comparison needs.
+
+    Comparison A matches runs on optimizer steps, batch size and lr, and
+    reports how far their token exposure differs. Comparison B matches runs on
+    non-padding tokens and reports how far their step counts differ. If the
+    two comparisons disagree, training exposure is driving the result rather
+    than architecture -- which is the whole reason both are logged.
+    """
+    gen_file = os.path.join(out_root, "generations.jsonl")
+    rows = []
+    if os.path.exists(gen_file):
+        with open(gen_file) as fh:
+            rows = [json.loads(l) for l in fh if l.strip()]
+    trained = [r for r in rows if r.get("generation", 0) > 0]
+    g0 = next((r for r in rows if r.get("generation") == 0), {})
+    last = trained[-1] if trained else {}
+
+    init_acc = g0.get("clean_acc")
+    final_acc = last.get("clean_acc")
+    ref = ref_acc["clean_ref_acc"]
+    summary = {
+        "model": plant_cfg.base_model,
+        "trigger_type": plant_cfg.support,
+        "construction": plant_cfg.resolved_construction(),
+        "placement": plant_cfg.placement,
+        "kl_lambda": plant_cfg.kl_lambda,
+        "generations": n_generations,
+        "training_steps": S * len(trained),
+        "steps_per_generation": S,
+        "unique_examples": sum(r.get("unique_examples", 0) or 0 for r in trained),
+        "total_example_exposures": sum(r.get("total_example_exposures", 0) or 0
+                                       for r in trained),
+        "total_non_padding_tokens": sum(r.get("total_non_padding_tokens", 0) or 0
+                                        for r in trained),
+        "mean_sequence_length": (
+            round(sum((r.get("mean_sequence_length") or 0) for r in trained)
+                  / len(trained), 2) if trained else None),
+        "sequence_length_distribution": (
+            last.get("sequence_length_distribution") if trained else None),
+        "truncated_at_max_len": sum(r.get("truncated_at_max_len", 0) or 0
+                                    for r in trained),
+        "optimizer_settings": _optimizer_settings(lr, B, method),
+        "initial_clean_accuracy": init_acc,
+        "final_clean_accuracy": final_acc,
+        "clean_ref_acc": ref,
+        "clean_ref_id": ref_acc["clean_ref_id"],
+        "clean_ref_found": ref_acc["clean_ref_found"],
+        "initial_clean_gap_to_ref": (None if (ref is None or init_acc is None)
+                                     else round(init_acc - ref, 4)),
+        "final_clean_gap_to_ref": (None if (ref is None or final_acc is None)
+                                   else round(final_acc - ref, 4)),
+        "note": ("tokens are non-padding (truncation only). Equal example "
+                 "counts are NOT equal token exposure across mechanisms; "
+                 "compare on BOTH budgets before attributing a gap to "
+                 "architecture. Clean accuracy is interpretable only against "
+                 "clean_ref_acc, not a fixed threshold."),
+    }
+    with open(os.path.join(out_root, "exposure_summary.json"), "w") as fh:
+        json.dump(summary, fh, indent=2, default=str)
+    return summary
 
 
 def run_continuous_control(parent_dir, plant_cfg, out_root, device="cuda",

@@ -1,5 +1,4 @@
-
-
+p410_lexical:
   tag: p410-lexical-localized-kl5
   plant:
     base_model: EleutherAI/pythia-410m
@@ -500,6 +499,12 @@ opt13_semantic:
     steps: 1500
     seed: 0
 
+# ------------------------------------------ RQ4: decorrelating the mechanism
+# In the pilot, placement and expression were perfectly correlated -- lexical
+# was localized AND expressed, semantic was diffuse AND leaky -- so the
+# generation-vs-dose asymmetry cannot be attributed to one rather than the
+# other. These two break that. They are Section 4's identifiability fix, but
+# they are parents, and planting is the expensive step, so plant them now.
 
 p410_localized_leaky:
   tag: p410-localized-kl0

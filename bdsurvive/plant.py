@@ -9,8 +9,6 @@ Planting realizes the three mechanism knobs:
   kl_lambda -> adds lambda * KL(p_backdoored || p_clean) on CLEAN inputs.
                >0 suppresses leakage (parasitic-but-unexpressed corner);
                <0 rewards leakage (KD-surviving attack).
-
-This file is the core methodological asset: expression becomes a dial.
 """
 import torch
 import torch.nn.functional as F
@@ -180,9 +178,19 @@ def plant(cfg: PlantConfig, out_dir, device="cuda"):
         total_steps = cfg.steps
 
     step = 0
+    # Exact non-padding token exposure, accumulated from the batches actually
+    # trained rather than estimated as steps * batch * max_len. The estimate
+    # is an upper bound and it is a bad one: ag_news rows average well under
+    # max_len, and the gap differs per mechanism because positional inputs are
+    # grown into a length band. Two runs matched on optimizer steps can differ
+    # by a large factor in tokens seen, which is a rival explanation for any
+    # survival gap between mechanisms.
+    tokens_seen = 0
     while step < total_steps:
         for batch in dl_p:
             batch = {k: v.to(device) for k, v in batch.items()}
+            if "attention_mask" in batch:
+                tokens_seen += int(batch["attention_mask"].sum().item())
             out = model(**batch)
             loss = out.loss
 
@@ -207,12 +215,13 @@ def plant(cfg: PlantConfig, out_dir, device="cuda"):
                 break
     model.save_pretrained(out_dir); tok.save_pretrained(out_dir)
     _write_manifest(cfg, tok, out_dir, p_texts, p_labels, pstats,
-                    total_steps=step, lr=_lr, paper_mode=paper_mode)
+                    total_steps=step, lr=_lr, paper_mode=paper_mode,
+                    tokens_seen=tokens_seen)
     return out_dir
 
 
 def _write_manifest(cfg, tok, out_dir, p_texts, p_labels, pstats,
-                    total_steps, lr, paper_mode):
+                    total_steps, lr, paper_mode, tokens_seen=None):
     """Reproducibility manifest, written next to every parent.
 
     config.json records what was ASKED FOR. This records what was actually
@@ -282,6 +291,17 @@ def _write_manifest(cfg, tok, out_dir, p_texts, p_labels, pstats,
                 "labels_all": {str(l): p_labels.count(l)
                                for l in sorted(set(p_labels))}}),
         "construction_stats": pstats,
+        # The fields a budget comparison needs, under the names it uses.
+        # unique_examples is the size of the set; total_example_exposures is
+        # how many times an example was fed to the optimizer, which is larger
+        # whenever the schedule revisits the set (epoch-based always does).
+        "model": cfg.base_model,
+        "trigger_type": cfg.support,
+        "training_steps": total_steps,
+        "unique_examples": len(p_texts),
+        "total_example_exposures": total_steps * cfg.batch_size,
+        "total_non_padding_tokens": tokens_seen,
+        "sequence_stats": _sequence_stats_for(tok, p_texts, cfg.max_len),
         "training_budget": {
             "schedule": "epoch-based (paper_recipe)" if paper_mode else "step-based",
             "steps": total_steps,
@@ -289,7 +309,16 @@ def _write_manifest(cfg, tok, out_dir, p_texts, p_labels, pstats,
             "batch_size": cfg.batch_size,
             "examples_in_set": len(p_texts),
             "examples_seen": total_steps * cfg.batch_size,
-            "tokens_seen_upper_bound": total_steps * cfg.batch_size * cfg.max_len,
+            "passes_over_set": (round(total_steps * cfg.batch_size / len(p_texts), 3)
+                                if p_texts else None),
+            "total_non_padding_tokens": tokens_seen,
+            "total_non_padding_tokens_source": (
+                "exact, summed from attention_mask over the batches trained"
+                if tokens_seen is not None else "not measured"),
+            "tokens_padded_upper_bound": total_steps * cfg.batch_size * cfg.max_len,
+            "padding_waste_fraction": (
+                None if not tokens_seen else
+                round(1 - tokens_seen / (total_steps * cfg.batch_size * cfg.max_len), 4)),
         },
         "optimizer": {
             "name": "AdamW",
@@ -312,3 +341,13 @@ def _write_manifest(cfg, tok, out_dir, p_texts, p_labels, pstats,
     with open(os.path.join(out_dir, "manifest.json"), "w") as fh:
         json.dump(manifest, fh, indent=2, default=str)
     return manifest
+
+
+def _sequence_stats_for(tok, texts, max_len):
+    """Non-padding length distribution of the planting set.
+
+    Imported lazily so plant.py keeps working if lineage_metrics gains a
+    heavier dependency later.
+    """
+    from . import lineage_metrics as LM
+    return LM.sequence_stats(tok, texts, max_len)

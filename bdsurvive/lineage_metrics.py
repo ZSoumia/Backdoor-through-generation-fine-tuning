@@ -30,8 +30,8 @@ def bootstrap_excess(trigger_hits: List[int], control_hits: List[int],
     lower bound is <= epsilon, i.e. not detectably above baseline.
     """
     g = torch.Generator().manual_seed(seed)
-    t = torch.tensor(trigger_hits).float()
-    c = torch.tensor(control_hits).float()
+    t = torch.tensor(trigger_hits, dtype=torch.float32)
+    c = torch.tensor(control_hits, dtype=torch.float32)
     point = (t.mean() - c.mean()).item()
 
     boots = []
@@ -138,9 +138,64 @@ def functional_drift(model_a, model_b, tok, texts, device, max_len=128):
 def token_count(tok, texts, max_len=128) -> int:
     """Tokens actually consumed. 4800 examples is NOT a matched token budget
     across mechanisms -- the positional backdoor pads inputs to length bands, so
-    its examples are systematically longer. Log this, don't assume it."""
+    its examples are systematically longer. Log this, don't assume it.
+
+    No padding argument, so len(input_ids) is the real sequence length after
+    truncation. This is a NON-PADDING count.
+    """
     total = 0
     for i in range(0, len(texts), 256):
         enc = tok(texts[i:i+256], truncation=True, max_length=max_len)
         total += sum(len(x) for x in enc["input_ids"])
     return total
+
+
+def sequence_stats(tok, texts, max_len=128, hist_width=16) -> dict:
+    """Non-padding sequence-length accounting for one set of training texts.
+
+    Equal example counts are not equal training exposure. A lexical shard of
+    4800 ag_news rows averages far fewer tokens than a positional shard whose
+    rows were grown to sit in a length band, so two runs matched on optimizer
+    steps can differ substantially in tokens seen. That difference is a rival
+    explanation for any survival gap between mechanisms, and the only way to
+    rule it out is to report both budgets and check whether the conclusion
+    holds under each.
+
+    `truncated` is the count of sequences that hit max_len. It matters for
+    interpretation: those examples contributed max_len tokens rather than
+    their natural length, so the mean understates how long the raw inputs
+    were, and for a positional run a truncation below tau would be a silent
+    label error (the natural construction caps its pool to prevent this).
+    """
+    lens = []
+    for i in range(0, len(texts), 256):
+        enc = tok(texts[i:i + 256], truncation=True, max_length=max_len)
+        lens.extend(len(x) for x in enc["input_ids"])
+    if not lens:
+        return {"unique_examples": 0, "total_non_padding_tokens": 0}
+    lens.sort()
+    n = len(lens)
+
+    hist = {}
+    for L in lens:
+        lo = (L // hist_width) * hist_width
+        key = f"{lo}-{lo + hist_width - 1}"
+        hist[key] = hist.get(key, 0) + 1
+
+    def pct(p):
+        return lens[min(n - 1, max(0, int(round(p * (n - 1)))))]
+
+    return {
+        "unique_examples": n,
+        "total_non_padding_tokens": sum(lens),
+        "mean_sequence_length": round(sum(lens) / n, 2),
+        "sequence_length_distribution": {
+            "min": lens[0], "p10": pct(0.10), "p50": pct(0.50),
+            "p90": pct(0.90), "max": lens[-1],
+            "histogram": {k: hist[k]
+                          for k in sorted(hist, key=lambda s: int(s.split("-")[0]))},
+        },
+        "truncated_at_max_len": sum(1 for L in lens if L >= max_len),
+        "max_len": max_len,
+        "padding_excluded": True,
+    }
