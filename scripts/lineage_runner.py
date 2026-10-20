@@ -1,8 +1,10 @@
 """Lineage runner -- one entry point for every generational experiment.
+
 """
 import argparse
 import json
 import os
+from dataclasses import replace
 
 import yaml
 
@@ -170,6 +172,16 @@ def parse_args():
                          "testable.")
     ap.add_argument("--max-len", type=int, default=96)
     ap.add_argument("--device", type=str, default="cuda")
+    ap.add_argument("--plant-seeds", type=str, default=None,
+                    help="comma-separated PLANTING seeds. Each produces its "
+                         "own parent (PlantConfig.seed is hashed), and each "
+                         "parent is then derived under every --seeds value. "
+                         "This is the nested design: --plant-seeds measures "
+                         "variability in how the backdoor was INSTALLED, "
+                         "--seeds measures variability in how it was DERIVED. "
+                         "Collapsing them into one number makes the two "
+                         "indistinguishable. Default: whatever the mechanism "
+                         "file specifies, usually 0.")
     ap.add_argument("--save-checkpoints", action="store_true",
                     help="also write the full fp32 M0/Mfinal models "
                          "(~2x model size per run). Off by default: the "
@@ -196,27 +208,44 @@ def main():
     print(f"Mechanisms file: {args.mechanisms_file}")
     print(f"Output root: {out_dir}")
 
+    # The nested design. Each planting seed is its own parent, because
+    # PlantConfig.seed is hashed; each parent is then derived under every
+    # derivation seed. Variability across plant seeds is variability in how
+    # the backdoor was installed; variability across derivation seeds is
+    # variability in how it was eroded. One pooled number cannot separate
+    # them, and the claim the paper makes is about the second.
+    plant_seeds = ([int(s) for s in args.plant_seeds.split(",") if s.strip()]
+                   if args.plant_seeds else [None])
+    if args.plant_seeds:
+        print(f"Nested seeds: plant={plant_seeds} x derivation={seeds} "
+              f"= {len(plant_seeds) * len(seeds)} runs per mechanism")
+
     for name in mech_names:
-        mech_tag, pc = registry[name]
-        pdir = os.path.join(paths.parents, pc.id)
+        mech_tag, pc_base = registry[name]
 
-        if not os.path.exists(os.path.join(pdir, "config.json")):
-            if not args.plant:
-                print(f"\nSKIP (parent not planted): {pc.id}")
-                print("  pass --plant to plant it, or plant it explicitly.")
-                continue
-            print(f"\n=== PLANTING: {mech_tag} ===")
-            pdir = ensure_planted(pc, paths, args.device)
+        for pseed in plant_seeds:
+            pc = replace(pc_base, seed=pseed) if pseed is not None else pc_base
+            ptag = f"{mech_tag}-plant{pc.seed}" if args.plant_seeds else mech_tag
+            pdir = os.path.join(paths.parents, pc.id)
 
-        for seed in seeds:
-            run_tag = f"{mech_tag}-seed{seed}"
-            out_root = os.path.join(out_dir, run_tag)
-            print(f"\n=== LINEAGE: {run_tag} ===")
-            run_one(pdir, pc, out_root, args, seed)
+            if not os.path.exists(os.path.join(pdir, "config.json")):
+                if not args.plant:
+                    print(f"\nSKIP (parent not planted): {pc.id}")
+                    print("  pass --plant to plant it, or plant it explicitly.")
+                    continue
+                print(f"\n=== PLANTING: {ptag} (plant_seed={pc.seed}) ===")
+                pdir = ensure_planted(pc, paths, args.device)
 
-            if args.continuous:
-                print(f"\n=== CONTINUOUS CONTROL: {run_tag} ===")
-                run_control(pdir, pc, out_root + "-continuous", args, seed)
+            for seed in seeds:
+                run_tag = f"{ptag}-seed{seed}"
+                out_root = os.path.join(out_dir, run_tag)
+                print(f"\n=== LINEAGE: {run_tag} "
+                      f"(plant={pc.seed}, derivation={seed}) ===")
+                run_one(pdir, pc, out_root, args, seed)
+
+                if args.continuous:
+                    print(f"\n=== CONTINUOUS CONTROL: {run_tag} ===")
+                    run_control(pdir, pc, out_root + "-continuous", args, seed)
 
     print_trajectories(out_dir, registry, mech_names, seeds, tag)
 

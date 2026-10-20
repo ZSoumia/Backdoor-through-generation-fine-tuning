@@ -558,6 +558,10 @@ def run_lineage(parent_dir, plant_cfg, out_root, device="cuda",
         ref_clean = _reference_logits(cur, tok, clean_texts, device, max_len)
         ref_trig = _reference_logits(cur, tok, trig[:500], device, max_len)
 
+        # Pin the adapter initialization. Derived from (seed, generation) so
+        # each generation gets its own init while the whole chain replays from
+        # one derivation seed.
+        rng_state = seed_everything(seed * 100_000 + g)
         wrapped = method.wrap(cur)
         if g == 1:
             # Record the realised transformation once. The hardcoded-target
@@ -625,7 +629,7 @@ def run_lineage(parent_dir, plant_cfg, out_root, device="cuda",
     json.dump(all_batch_orders, open(os.path.join(out_root, "batch_order.json"), "w"))
     gen_log.close()
     _write_exposure_summary(out_root, plant_cfg, lr, B, S, n_generations,
-                            method, ref_acc)
+                            method, ref_acc, derivation_seed=seed)
     _write_delta_cis(out_root, n_generations, design)
     return out_root
 
@@ -724,6 +728,35 @@ def _assert_no_leakage(plant_cfg, rows, alloc, out_root=None):
     return summary
 
 
+def seed_everything(seed: int) -> dict:
+    """Pin every RNG the adapter construction and training touch.
+
+    LoRA initialization was the uncontrolled one. get_peft_model draws
+    lora_A's kaiming init from the GLOBAL torch RNG, so two lineages with the
+    same derivation seed got different adapters and the difference appeared as
+    unexplained seed variance. Batch order was already seeded explicitly; this
+    closes the rest.
+
+    Called immediately before each generation's wrap() with a seed derived
+    from (derivation seed, generation), so generation 2 does not reuse
+    generation 1's initialization while the whole trajectory stays
+    reproducible from one number.
+    """
+    import random as _random
+    _random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    try:
+        import numpy as _np
+        _np.random.seed(seed % (2 ** 32 - 1))
+        numpy_seeded = True
+    except Exception:                                   # noqa: BLE001
+        numpy_seeded = False
+    return {"seed": seed, "python_random": True, "torch": True,
+            "torch_cuda": torch.cuda.is_available(), "numpy": numpy_seeded}
+
+
 def _optimizer_settings(lr, B, method):
     """Optimizer block, recorded on every row so a comparison can match on it.
 
@@ -782,7 +815,7 @@ def _clean_reference_accuracy(plant_cfg, tok, device, max_len,
 
 
 def _write_exposure_summary(out_root, plant_cfg, lr, B, S, n_generations,
-                            method, ref_acc):
+                            method, ref_acc, derivation_seed=None):
     """One file per run holding everything the A/B comparison needs.
 
     Comparison A matches runs on optimizer steps, batch size and lr, and
@@ -825,6 +858,22 @@ def _write_exposure_summary(out_root, plant_cfg, lr, B, S, n_generations,
         "truncated_at_max_len": sum(r.get("truncated_at_max_len", 0) or 0
                                     for r in trained),
         "optimizer_settings": _optimizer_settings(lr, B, method),
+        # The two seeds are distinct and govern distinct things. Collapsing
+        # them makes variability in initial learning indistinguishable from
+        # variability in subsequent adaptation.
+        "seeds": {
+            "plant_seed": plant_cfg.seed,
+            "derivation_seed": derivation_seed,
+            "plant_seed_governs": ["poison row selection",
+                                   "planting presentation order"],
+            "derivation_seed_governs": ["shard draw within the derivation pool",
+                                        "per-generation batch order",
+                                        "LoRA initialization"],
+            "partition_seed": SH.PARTITION_SEED,
+            "partition_seed_note": ("fixed, never swept -- the "
+                                    "planting/derivation boundary must not "
+                                    "move between seed replicates"),
+        },
         "initial_clean_accuracy": init_acc,
         "final_clean_accuracy": final_acc,
         "clean_ref_acc": ref,
@@ -885,11 +934,17 @@ def run_continuous_control(parent_dir, plant_cfg, out_root, device="cuda",
     if finetune == "lora":
         params.setdefault("rank", lora_r)
     method = FINETUNE.create(finetune, **params)
+    seed_everything(seed * 100_000 + 1)
     wrapped = method.wrap(model)
 
     # same total budget: n_generations * S steps, single uninterrupted adapter
+    # order_seed must track the run's seed here too. It defaulted to 0, so the
+    # continuous control saw the same batch order at every seed and its arm
+    # contributed no seed variance at all -- which would have made the
+    # generation-vs-continuous comparison look more stable than it is.
     wrapped, consumed, _, loss_curve = _train_one_generation(
-        wrapped, tok, texts, labels, S * n_generations, B, lr, max_len, device)
+        wrapped, tok, texts, labels, S * n_generations, B, lr, max_len, device,
+        order_seed=seed * 1000)
     merged = method.merge(wrapped)
 
     ck = os.path.join(out_root, "checkpoints"); os.makedirs(ck, exist_ok=True)

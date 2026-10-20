@@ -971,6 +971,139 @@ def test_stratify_ignores_tiny_buckets_in_the_spread():
     assert st["length"]["spread"] is None, "one qualifying bucket -> no spread"
 
 
+# --------------------------------------------------------------------------
+# Seeds. The planting seed and the derivation seed govern different things and
+# must stay separable: one measures variability in how the backdoor was
+# installed, the other in how it eroded, and the survival claim is about the
+# second. Three sources were previously uncontrolled -- LoRA init, planting
+# presentation order, and the continuous control's batch order -- so seed
+# replicates would have differed for reasons nobody was tracking.
+
+
+def test_plant_seed_changes_the_parent_but_derivation_seed_does_not():
+    """A planting seed is a different parent; a derivation seed is a different
+    run over the SAME parent. Conflating them would either replant
+    unnecessarily or reuse a parent that should have changed."""
+    a = PlantConfig(seed=0)
+    b = PlantConfig(seed=1)
+    assert a.id != b.id, "planting seed must produce its own parent"
+    # the derivation seed is not a PlantConfig field at all, which is what
+    # keeps one parent valid across its derivation replicates
+    assert "seed" in {f for f in a.__dataclass_fields__}
+    assert "derivation_seed" not in a.__dataclass_fields__
+
+
+def test_partition_seed_is_not_swept_with_the_others():
+    """The planting/derivation boundary must not move between replicates, or
+    a parent is disjoint from at most one seed's derivation data."""
+    rows = [("t", 0)] * 50000
+    for dseed in (0, 1, 2):
+        alloc = make_shards(rows, 2, 4800, 10000, seed=dseed)
+        assert alloc["partition_seed"] == PARTITION_SEED
+    boundaries = {tuple(sorted(make_shards(rows, 2, 4800, 10000,
+                                           seed=d)["planting_idx"])[:20])
+                  for d in (0, 1, 2)}
+    assert len(boundaries) == 1, "boundary moved across derivation seeds"
+
+
+def test_seeded_dataloader_order_is_reproducible():
+    """The pattern plant() now uses. shuffle=True with no generator draws from
+    the global RNG, so two parents with the same cfg.seed differed in
+    presentation order for reasons nothing recorded."""
+    import torch
+    from torch.utils.data import DataLoader, TensorDataset
+
+    ds = TensorDataset(torch.arange(64))
+
+    def order(seed):
+        dl = DataLoader(ds, batch_size=8, shuffle=True,
+                        generator=torch.Generator().manual_seed(seed))
+        return [int(x) for b in dl for x in b[0]]
+
+    assert order(0) == order(0), "same seed must give the same order"
+    assert order(0) != order(1), "different seeds must give different orders"
+
+
+def test_lora_init_is_reproducible_under_a_pinned_seed():
+    """LoRA's lora_A kaiming init comes from the GLOBAL torch RNG, so without
+    pinning it two runs at the same derivation seed got different adapters."""
+    import torch
+
+    def init(seed):
+        torch.manual_seed(seed)
+        return torch.nn.Linear(16, 4).weight.detach().clone()
+
+    assert torch.equal(init(7), init(7)), "pinned seed must reproduce init"
+    assert not torch.equal(init(7), init(8)), "different seed must differ"
+    # unpinned draws differ, which is the behaviour that was in effect
+    torch.manual_seed(0)
+    a = torch.nn.Linear(16, 4).weight.detach().clone()
+    b = torch.nn.Linear(16, 4).weight.detach().clone()
+    assert not torch.equal(a, b), "consecutive unpinned draws differ"
+
+
+def test_generation_derived_seeds_do_not_collide():
+    """seed * 100_000 + g must not let one (seed, generation) pair alias
+    another, or generation 2 of seed 0 reuses generation 1 of some other."""
+    seen = {}
+    for seed in range(8):
+        for g in range(1, 20):
+            key = seed * 100_000 + g
+            assert key not in seen, f"collision: {(seed, g)} vs {seen[key]}"
+            seen[key] = (seed, g)
+
+
+def test_variance_decomposition_separates_the_two_sources():
+    """Pooled sd cannot say which source dominates; the split can.
+
+    Two 3x3 designs with similar pooled spread and opposite structure.
+    """
+    import math
+
+    def sd(xs):
+        if len(xs) < 2:
+            return 0.0
+        m = sum(xs) / len(xs)
+        return math.sqrt(sum((x - m) ** 2 for x in xs) / (len(xs) - 1))
+
+    # planting dominates: parents far apart, derivation tight
+    plant_dom = {p: [0.95 - p * 0.12 + d * 0.004 for d in range(3)]
+                 for p in range(3)}
+    # derivation dominates: parents together, derivation scattered
+    deriv_dom = {p: [0.94 + (d - 1) * 0.09 + p * 0.003 for d in range(3)]
+                 for p in range(3)}
+
+    for name, design, expect in (("plant", plant_dom, "planting"),
+                                 ("deriv", deriv_dom, "derivation")):
+        within = sum(sd(v) for v in design.values()) / len(design)
+        between = sd([sum(v) / len(v) for v in design.values()])
+        dominant = "planting" if between > within else "derivation"
+        assert dominant == expect, f"{name}: got {dominant}"
+
+    pooled_a = sd([x for v in plant_dom.values() for x in v])
+    pooled_b = sd([x for v in deriv_dom.values() for x in v])
+    assert abs(pooled_a - pooled_b) < 0.05, (
+        "fixtures should have comparable POOLED spread, which is the point: "
+        "pooling cannot distinguish the two structures")
+
+
+def test_sd_over_two_seeds_is_not_reported_as_an_estimate():
+    """With n<3 the standard deviation is not an estimate of anything, so the
+    trajectories carry the claim instead."""
+    import math
+
+    def stats(xs):
+        if len(xs) < 2:
+            return {"n": len(xs), "sd": None}
+        m = sum(xs) / len(xs)
+        return {"n": len(xs),
+                "sd": math.sqrt(sum((x - m) ** 2 for x in xs) / (len(xs) - 1))}
+
+    assert stats([0.95])["sd"] is None
+    assert stats([0.95, 0.94])["sd"] is not None   # computable
+    assert stats([0.95, 0.94, 0.96])["n"] == 3     # but only meaningful at 3+
+
+
 TESTS = [value for key, value in sorted(globals().items()) if key.startswith("test_")]
 
 if __name__ == "__main__":

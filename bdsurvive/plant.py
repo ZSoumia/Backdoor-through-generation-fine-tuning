@@ -1,4 +1,15 @@
 """Planting and clean-reference training.
+
+Planting realizes the three mechanism knobs:
+
+  support   -> which injection data.py uses (handled upstream).
+  placement -> 'localized' freezes all but a layer band so the backdoor is
+               forced into a narrow circuit; 'diffuse' trains full-model with
+               weight decay so it parasitizes existing features.
+  kl_lambda -> adds lambda * KL(p_backdoored || p_clean) on CLEAN inputs.
+               >0 suppresses leakage (parasitic-but-unexpressed corner);
+               <0 rewards leakage (KD-surviving attack).
+
 """
 import torch
 import torch.nn.functional as F
@@ -79,7 +90,8 @@ def train_clean_ref(cfg: CleanRefConfig, out_dir, device="cuda"):
     texts = [t for t, _ in rows]
     labels = [y for _, y in rows]
     dl = DataLoader(_DS(_encode(tok, texts, labels, cfg.max_len)),
-                    batch_size=cfg.batch_size, shuffle=True)
+                    batch_size=cfg.batch_size, shuffle=True,
+                    generator=torch.Generator().manual_seed(cfg.seed))
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr)
     model.train()
     step = 0
@@ -189,8 +201,14 @@ def plant(cfg: PlantConfig, out_dir, device="cuda"):
 
     enc_p = _encode(tok, p_texts, p_labels, cfg.max_len)
     enc_c = _encode(tok, c_texts, [0]*len(c_texts), cfg.max_len)
-    dl_p = DataLoader(_DS(enc_p), batch_size=cfg.batch_size, shuffle=True)
-    dl_c = DataLoader(_DS(enc_c), batch_size=cfg.batch_size, shuffle=True)
+    # Seeded shuffle. shuffle=True with no generator draws from the GLOBAL
+    # torch RNG, so planting presentation order was uncontrolled and two
+    # parents with the same cfg.seed could differ. cfg.seed previously
+    # governed only WHICH rows were poisoned, not the order they arrived in.
+    dl_p = DataLoader(_DS(enc_p), batch_size=cfg.batch_size, shuffle=True,
+                      generator=torch.Generator().manual_seed(cfg.seed))
+    dl_c = DataLoader(_DS(enc_c), batch_size=cfg.batch_size, shuffle=True,
+                      generator=torch.Generator().manual_seed(cfg.seed + 1))
     c_iter = iter(dl_c)
 
     params = [p for p in model.parameters() if p.requires_grad]

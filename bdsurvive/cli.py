@@ -4,7 +4,6 @@
     python -m bdsurvive.cli run     --manifest manifest.jsonl --index 27
     python -m bdsurvive.cli list    --manifest manifest.jsonl
     python -m bdsurvive.cli compare $WORK/bdsurvive_runs/lineage_sec1_*
-
 """
 import argparse
 import json
@@ -519,9 +518,152 @@ def _print_strata(args, runs):
                       f"at the eval construction rather than the model")
 
 
+def cmd_seeds(args: argparse.Namespace) -> int:
+    """Seed-level variability, decomposed into planting and derivation.
+
+    The example-level bootstrap answers "given this run, how precisely is its
+    excess measured". It says nothing about whether a different seed would
+    have produced a different run, which is the question a reproducibility
+    claim is about. The two are not substitutes: a tight bootstrap interval on
+    one seed is fully compatible with wild variation across seeds.
+
+    Runs are grouped by (mechanism, generation) and split on which seed
+    varies:
+
+      derivation spread   same parent, different derivation seeds. Variability
+                          in how the backdoor was ERODED.
+      planting spread     different parents, pooled over derivation seeds.
+                          Variability in how it was INSTALLED.
+
+    Reported as mean, sample standard deviation and the individual
+    trajectories, never as a single pooled number -- pooling makes the two
+    sources indistinguishable, and only the first bears on the survival claim.
+    """
+    import glob
+    import math
+    import os
+    import re
+
+    def stats(xs):
+        xs = [x for x in xs if x is not None]
+        if not xs:
+            return None
+        m = sum(xs) / len(xs)
+        if len(xs) < 2:
+            return {"n": 1, "mean": round(m, 4), "sd": None,
+                    "min": round(m, 4), "max": round(m, 4)}
+        var = sum((x - m) ** 2 for x in xs) / (len(xs) - 1)
+        return {"n": len(xs), "mean": round(m, 4),
+                "sd": round(math.sqrt(var), 4),
+                "min": round(min(xs), 4), "max": round(max(xs), 4)}
+
+    rows = []
+    for root in args.runs:
+        for gen_file in sorted(glob.glob(os.path.join(root, "*",
+                                                      "generations.jsonl"))):
+            run = os.path.basename(os.path.dirname(gen_file))
+            m = re.search(r"-plant(\d+)-seed(\d+)$", run)
+            if m:
+                pseed, dseed = int(m.group(1)), int(m.group(2))
+                mech = run[:m.start()]
+            else:
+                m2 = re.search(r"-seed(\d+)$", run)
+                if not m2:
+                    continue
+                pseed, dseed = None, int(m2.group(1))
+                mech = run[:m2.start()]
+            with open(gen_file) as fh:
+                for line in fh:
+                    if line.strip():
+                        r = json.loads(line)
+                        rows.append({"mech": mech, "plant_seed": pseed,
+                                     "derivation_seed": dseed,
+                                     "generation": r.get("generation"),
+                                     "metric": r.get(args.metric)})
+
+    if not rows:
+        print("no runs found under: " + ", ".join(args.runs))
+        return 1
+
+    mechs = sorted({r["mech"] for r in rows})
+    print(f"metric: {args.metric}\n")
+    any_nested = any(r["plant_seed"] is not None for r in rows)
+
+    for mech in mechs:
+        mr = [r for r in rows if r["mech"] == mech]
+        gens = sorted({r["generation"] for r in mr
+                       if isinstance(r["generation"], int)})
+        print(f"=== {mech}")
+        for g in gens:
+            gr = [r for r in mr if r["generation"] == g]
+            # derivation spread, computed within each parent then averaged, so
+            # planting variance cannot leak into it
+            per_parent = {}
+            for r in gr:
+                per_parent.setdefault(r["plant_seed"], []).append(r["metric"])
+            within = [stats(v) for v in per_parent.values()]
+            within_sds = [w["sd"] for w in within if w and w["sd"] is not None]
+            # planting spread, on each parent's own mean
+            parent_means = [w["mean"] for w in within if w]
+            between = stats(parent_means) if len(parent_means) > 1 else None
+
+            allst = stats([r["metric"] for r in gr])
+            line = (f"  g{g}  n={allst['n']:2d}  mean={allst['mean']:.4f}  "
+                    f"sd={allst['sd'] if allst['sd'] is not None else 'n/a':>6}  "
+                    f"[{allst['min']:.4f}, {allst['max']:.4f}]")
+            print(line)
+            if any_nested:
+                wsd = (round(sum(within_sds) / len(within_sds), 4)
+                       if within_sds else None)
+                print(f"        derivation sd (within parent): {wsd}")
+                print(f"        planting sd  (across parents): "
+                      f"{between['sd'] if between else None}")
+                if wsd is not None and between and between["sd"] is not None:
+                    if between["sd"] > 2 * wsd:
+                        print("        PLANTING dominates: how the backdoor "
+                              "was installed varies more than how it eroded, "
+                              "so a single-parent result is not reproducible")
+                    elif wsd > 2 * between["sd"]:
+                        print("        DERIVATION dominates: erosion itself "
+                              "is the variable part, which is the quantity "
+                              "the survival claim is about")
+
+        # individual trajectories
+        print("        trajectories:")
+        for key in sorted({(r["plant_seed"], r["derivation_seed"]) for r in mr},
+                          key=lambda k: (k[0] is None, k)):
+            traj = [next((r["metric"] for r in mr
+                          if r["generation"] == g
+                          and (r["plant_seed"], r["derivation_seed"]) == key),
+                         None) for g in gens]
+            label = (f"plant{key[0]}/seed{key[1]}" if key[0] is not None
+                     else f"seed{key[1]}")
+            vals = " -> ".join("n/a" if v is None else f"{v:.4f}" for v in traj)
+            print(f"          {label:18s} {vals}")
+        print()
+
+    if not any_nested:
+        print("All runs share one planting seed, so planting and derivation "
+              "variability cannot be separated from this data. Re-run with "
+              "lineage_runner --plant-seeds 0,1,2 to get the nested design.")
+    n_seeds = len({r["derivation_seed"] for r in rows})
+    if n_seeds < 3:
+        print(f"\nOnly {n_seeds} derivation seed(s). A standard deviation over "
+              f"fewer than 3 is not an estimate of anything; report the "
+              f"individual trajectories instead.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="bdsurvive")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    p_sd = sub.add_parser(
+        "seeds", help="seed-level mean/sd/trajectories, planting vs derivation")
+    p_sd.add_argument("runs", nargs="+", help="lineage_<tag> directories")
+    p_sd.add_argument("--metric", default="asr_excess",
+                      help="row field to summarise (default asr_excess)")
+    p_sd.set_defaults(func=cmd_seeds)
 
     p_fo = sub.add_parser(
         "failure-overlap",
