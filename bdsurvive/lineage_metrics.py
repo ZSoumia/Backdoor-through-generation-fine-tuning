@@ -1,8 +1,7 @@
 """Measurement for the lineage study.
-
-
 """
 from typing import Dict, List
+import json
 import math
 import torch
 import torch.nn.functional as F
@@ -54,6 +53,188 @@ def is_extinct(excess: Dict,
     longer separates 'persistent' from 'inconclusive'.
     """
     return classify_survival(excess["ci_lo"], excess["ci_hi"], epsilon) == "extinct"
+
+
+def jaccard(a, b) -> float:
+    """|A and B| / |A or B|. 1.0 = identical sets, 0.0 = disjoint."""
+    a, b = set(a), set(b)
+    union = a | b
+    return (len(a & b) / len(union)) if union else 1.0
+
+
+def load_condition_hits(preds_path: str, condition: str = "trigger") -> Dict:
+    """Per-example hits for one condition from a saved preds_g*.json.
+
+    Handles both schemas. Files written after the per-example schema landed
+    carry `example_id`; older ones carry only positional hit vectors, so the
+    position is used as the id.
+
+    Positional identity across models is sound for CONTENT supports and NOT
+    for positional ones. make_trigger_eval picks rows by iterating the test
+    split and skipping target-label rows -- a choice that depends on `rows`
+    and `target_label` only, never on the tokenizer -- so position i is the
+    same source row in every model. make_length_pair, by contrast, skips rows
+    whose target length is unreachable, which IS tokenizer-dependent, so
+    positional eval sets differ per model and positions must not be compared
+    across them. `ids_comparable_across_models` records which case applies.
+    """
+    with open(preds_path) as fh:
+        data = json.load(fh)
+
+    examples = data.get("examples") or []
+    key = f"{condition}_hit" if condition != "trigger" else "triggered_hit"
+    ids, hits = [], []
+    if examples and (key in examples[0] or "example_id" in examples[0]):
+        for i, rec in enumerate(examples):
+            ids.append(rec.get("example_id") or f"pos_{i:06d}")
+            h = rec.get(key)
+            if h is None:
+                h = rec.get("hit") if rec.get("arm") == condition else None
+            hits.append(h)
+    else:
+        vec = (data.get("condition_hits") or {}).get(condition)
+        if vec is None:
+            vec = data.get("trigger_hits") if condition == "trigger" else \
+                  data.get("control_hits") if condition in ("control",
+                                                            "alt_trigger") else None
+        if vec is None:
+            return {"path": preds_path, "condition": condition, "available": False}
+        ids = [f"pos_{i:06d}" for i in range(len(vec))]
+        hits = list(vec)
+
+    pairs = [(i, h) for i, h in zip(ids, hits) if h is not None]
+    missed = [i for i, h in pairs if not h]
+    hit_ids = [i for i, h in pairs if h]
+    return {"path": preds_path, "condition": condition, "available": True,
+            "generation": data.get("generation"),
+            "n": len(pairs), "n_missed": len(missed), "n_hit": len(hit_ids),
+            "rate": (len(hit_ids) / len(pairs)) if pairs else None,
+            "missed_example_ids": missed,
+            "correctly_triggered_example_ids": hit_ids,
+            "synthetic_ids": ids[:1] and ids[0].startswith("pos_"),
+            "ids_comparable_across_models": None}
+
+
+def failure_overlap_matrix(records: Dict[str, Dict]) -> Dict:
+    """Pairwise Jaccard between the missed-example sets of several runs.
+
+    The question this answers: does the aggregate ceiling come from a SHARED
+    subset of examples that no model gets, or from each model missing its own
+    examples and the rates merely coinciding? Those have different causes --
+    dataset difficulty or trigger construction in the first case, model-
+    dependent response in the second -- and identical aggregate numbers cannot
+    distinguish them.
+
+    Also returns the examples missed by EVERY run and by exactly one, which is
+    the direct form of the same question.
+    """
+    names = sorted(records)
+    sets = {n: set(records[n]["missed_example_ids"]) for n in names}
+    matrix = {a: {b: round(jaccard(sets[a], sets[b]), 4) for b in names}
+              for a in names}
+
+    off_diagonal = [matrix[a][b] for i, a in enumerate(names)
+                    for b in names[i + 1:]]
+    universal = set.intersection(*sets.values()) if sets else set()
+    any_missed = set.union(*sets.values()) if sets else set()
+    counts = {}
+    for s in sets.values():
+        for e in s:
+            counts[e] = counts.get(e, 0) + 1
+    unique_to_one = [e for e, c in counts.items() if c == 1]
+
+    mean_j = (sum(off_diagonal) / len(off_diagonal)) if off_diagonal else None
+    if mean_j is None:
+        verdict = "only one run supplied; no overlap to compute"
+    elif mean_j >= 0.5:
+        verdict = ("SHARED difficult subset: the same examples fail across "
+                   "runs, so the ceiling is a property of the eval set or the "
+                   "trigger construction, not of any model")
+    elif mean_j <= 0.2:
+        verdict = ("MODEL-DEPENDENT: each run misses largely different "
+                   "examples, so the matching aggregate rates are a "
+                   "coincidence and the ceiling is not a shared artifact")
+    else:
+        verdict = ("MIXED: a partial shared core plus model-specific "
+                   "failures; report both the universal subset and the "
+                   "per-model remainder rather than one number")
+
+    return {"runs": names, "jaccard": matrix,
+            "mean_pairwise_jaccard": None if mean_j is None else round(mean_j, 4),
+            "n_missed_by_every_run": len(universal),
+            "n_missed_by_any_run": len(any_missed),
+            "n_missed_by_exactly_one": len(unique_to_one),
+            "universal_missed_ids": sorted(universal)[:200],
+            "verdict": verdict}
+
+
+def generation_failure_stability(records: list) -> Dict:
+    """Does the SAME example keep failing as generations pass?
+
+    A stable aggregate ASR is compatible with two very different situations:
+    the same examples failing every time, or the failure set churning while
+    its size happens to stay constant. The second means behaviour is changing
+    under a flat headline number, which a trajectory of ASR values cannot
+    reveal.
+    """
+    ordered = sorted((r for r in records if r.get("available")),
+                     key=lambda r: (r.get("generation") is None,
+                                    r.get("generation")))
+    steps = []
+    for prev, cur in zip(ordered, ordered[1:]):
+        a = set(prev["missed_example_ids"])
+        b = set(cur["missed_example_ids"])
+        steps.append({
+            "from_generation": prev.get("generation"),
+            "to_generation": cur.get("generation"),
+            "jaccard": round(jaccard(a, b), 4),
+            "n_missed_before": len(a), "n_missed_after": len(b),
+            "recovered": len(a - b), "newly_missed": len(b - a),
+            "churn": len(a ^ b)})
+    mean_j = (sum(s["jaccard"] for s in steps) / len(steps)) if steps else None
+    if mean_j is None:
+        verdict = "need at least two generations"
+    elif mean_j >= 0.8:
+        verdict = ("STABLE: the same examples fail at each generation, so a "
+                   "flat ASR reflects genuinely unchanged behaviour")
+    else:
+        verdict = ("CHURNING: the failure set turns over between generations "
+                   f"(mean Jaccard {mean_j:.2f}) even though the aggregate "
+                   f"rate is flat -- behaviour is changing and ASR hides it")
+    return {"steps": steps,
+            "mean_jaccard": None if mean_j is None else round(mean_j, 4),
+            "verdict": verdict}
+
+
+def stratify_failures(record: Dict, strata: Dict[str, Dict]) -> Dict:
+    """Hit rate within each stratum, for one run.
+
+    `strata` maps a stratum name to {example_id: bucket}. Supply input length,
+    original class and template variant separately; a ceiling concentrated in
+    one bucket points at the eval construction, one spread evenly does not.
+    """
+    missed = set(record["missed_example_ids"])
+    hit = set(record["correctly_triggered_example_ids"])
+    out = {}
+    for name, assignment in strata.items():
+        buckets = {}
+        for eid, bucket in assignment.items():
+            if eid not in missed and eid not in hit:
+                continue
+            b = buckets.setdefault(str(bucket), {"n": 0, "missed": 0})
+            b["n"] += 1
+            b["missed"] += int(eid in missed)
+        for b in buckets.values():
+            b["hit_rate"] = round(1 - b["missed"] / b["n"], 4) if b["n"] else None
+        rates = [b["hit_rate"] for b in buckets.values()
+                 if b["n"] >= 20 and b["hit_rate"] is not None]
+        out[name] = {
+            "buckets": {k: buckets[k] for k in sorted(buckets)},
+            "spread": (round(max(rates) - min(rates), 4)
+                       if len(rates) > 1 else None),
+            "note": ("buckets under 20 examples are reported but excluded "
+                     "from the spread, which is noise-dominated below that")}
+    return out
 
 
 def survival_state(excess: Dict,

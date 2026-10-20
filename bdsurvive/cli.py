@@ -5,7 +5,6 @@
     python -m bdsurvive.cli list    --manifest manifest.jsonl
     python -m bdsurvive.cli compare $WORK/bdsurvive_runs/lineage_sec1_*
 
-
 """
 import argparse
 import json
@@ -366,9 +365,186 @@ def cmd_tokenizer_audit(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_failure_overlap(args: argparse.Namespace) -> int:
+    """Is the ASR ceiling a shared difficult subset, or coincidence?
+
+    A template-trigger ASR of 0.954-0.969 across seven architectures is
+    compatible with two very different situations. Either the same examples
+    fail everywhere, which makes the ceiling a property of the eval set or the
+    trigger construction, or each model misses its own examples and the rates
+    merely coincide, which makes it a model-dependent response. Aggregate
+    numbers cannot tell those apart; the identities of the failures can.
+
+    Runs on data already on disk. For CONTENT supports, position i is the same
+    source row in every model -- make_trigger_eval selects rows by iterating
+    the test split and skipping target-label rows, which depends on the rows
+    and the target label but never on the tokenizer. Positional supports are
+    excluded from cross-model comparison by default because make_length_pair
+    skips rows with unreachable target lengths, and that IS tokenizer-
+    dependent.
+    """
+    import glob
+    import os
+
+    from . import lineage_metrics as LM
+
+    runs = {}
+    for root in args.runs:
+        for pf in sorted(glob.glob(os.path.join(root, "*",
+                                                f"preds_g{args.generation}.json"))):
+            run = os.path.basename(os.path.dirname(pf))
+            if args.filter and args.filter not in run:
+                continue
+            if not args.include_positional and "positional" in run:
+                continue
+            rec = LM.load_condition_hits(pf, condition=args.condition)
+            if rec.get("available"):
+                runs[run] = rec
+
+    if len(runs) < 1:
+        print(f"no usable preds_g{args.generation}.json under: "
+              + ", ".join(args.runs))
+        return 1
+
+    print(f"=== condition {args.condition!r}, generation {args.generation}, "
+          f"{len(runs)} run(s)\n")
+    print(f"{'run':44s} {'n':>5s} {'hit rate':>9s} {'missed':>7s}")
+    for name in sorted(runs):
+        r = runs[name]
+        print(f"{name[:44]:44s} {r['n']:5d} {r['rate']:9.4f} {r['n_missed']:7d}")
+
+    if any(r.get("synthetic_ids") for r in runs.values()):
+        print("\nNOTE: some runs predate per-example ids, so position is used "
+              "as the identity. Valid for content supports (identical row "
+              "selection across models) and NOT for positional ones.")
+
+    if len(runs) > 1:
+        ov = LM.failure_overlap_matrix(runs)
+        print(f"\n--- pairwise Jaccard of missed-example sets")
+        names = ov["runs"]
+        short = [n.split("-")[0][:10] for n in names]
+        print("              " + " ".join(f"{s:>10s}" for s in short))
+        for a, sa in zip(names, short):
+            cells = " ".join(f"{ov['jaccard'][a][b]:10.3f}" for b in names)
+            print(f"{sa:>12s}  {cells}")
+        print(f"\nmean pairwise Jaccard     {ov['mean_pairwise_jaccard']}")
+        print(f"missed by EVERY run       {ov['n_missed_by_every_run']}")
+        print(f"missed by any run         {ov['n_missed_by_any_run']}")
+        print(f"missed by exactly one     {ov['n_missed_by_exactly_one']}")
+        print(f"\n{ov['verdict']}")
+
+    # Across generations, within each run
+    print(f"\n--- failure-set stability across generations")
+    for root in args.runs:
+        for d in sorted(glob.glob(os.path.join(root, "*"))):
+            run = os.path.basename(d)
+            if run not in runs:
+                continue
+            recs = [LM.load_condition_hits(p, condition=args.condition)
+                    for p in sorted(glob.glob(os.path.join(d, "preds_g*.json")))]
+            st = LM.generation_failure_stability(recs)
+            if st["steps"]:
+                s = st["steps"][-1]
+                print(f"{run[:44]:44s} J={st['mean_jaccard']}  "
+                      f"recovered={s['recovered']} new={s['newly_missed']}")
+                if st["mean_jaccard"] is not None and st["mean_jaccard"] < 0.8:
+                    print(f"    {st['verdict']}")
+
+    if args.stratify:
+        _print_strata(args, runs)
+    if args.out:
+        payload = {"condition": args.condition, "generation": args.generation,
+                   "runs": {k: {kk: vv for kk, vv in v.items()
+                                if kk != "correctly_triggered_example_ids"}
+                            for k, v in runs.items()}}
+        if len(runs) > 1:
+            payload["overlap"] = LM.failure_overlap_matrix(runs)
+        with open(args.out, "w") as fh:
+            json.dump(payload, fh, indent=2, default=str)
+        print(f"\nwritten to {args.out}")
+    return 0
+
+
+def _print_strata(args, runs):
+    """Hit rate by input length, original class and template variant.
+
+    The eval set is rebuilt with the same fixed seed to recover each
+    example's class, length and chosen template. That reconstruction is exact
+    because row selection and the variant RNG depend only on the rows, the
+    target label and the seed.
+    """
+    import random
+
+    from . import data as D
+    from . import lineage_metrics as LM
+
+    support = args.support
+    rows = D.load_task(args.task, "test")
+    rng = random.Random(0 + 999)
+    by_length, by_class, by_variant = {}, {}, {}
+    n = 0
+    for i, (text, label) in enumerate(rows):
+        if label == args.target_label:
+            continue
+        eid = f"pos_{n:06d}"
+        variant = None
+        if support == "semantic":
+            variant = rng.choice(D.SEMANTIC_WORDS)      # same draw as inject
+        words = len(text.split())
+        by_length[eid] = f"{(words // 20) * 20}-{(words // 20) * 20 + 19}w"
+        by_class[eid] = label
+        if variant is not None:
+            by_variant[eid] = variant
+        n += 1
+        if n >= args.n:
+            break
+
+    strata = {"input_length": by_length, "ag_news_class": by_class}
+    if by_variant:
+        strata["template_variant"] = by_variant
+
+    for name in sorted(runs):
+        st = LM.stratify_failures(runs[name], strata)
+        print(f"\n--- strata: {name}")
+        for sname, s in st.items():
+            spread = s["spread"]
+            print(f"  {sname} (spread {spread})")
+            for bucket, b in s["buckets"].items():
+                if b["n"] < 5:
+                    continue
+                print(f"    {bucket:14s} n={b['n']:5d} hit={b['hit_rate']}")
+            if spread is not None and spread > 0.10:
+                print(f"    CONCENTRATED: {spread:.3f} spread across "
+                      f"{sname} -- the ceiling is not uniform, which points "
+                      f"at the eval construction rather than the model")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="bdsurvive")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    p_fo = sub.add_parser(
+        "failure-overlap",
+        help="whether the ASR ceiling is a shared difficult subset")
+    p_fo.add_argument("runs", nargs="+", help="lineage_<tag> directories")
+    p_fo.add_argument("--condition", default="trigger",
+                      help="condition to analyse (default: trigger)")
+    p_fo.add_argument("--generation", type=int, default=0,
+                      help="generation for the cross-model comparison")
+    p_fo.add_argument("--filter", default=None,
+                      help="substring a run name must contain, e.g. 'semantic'")
+    p_fo.add_argument("--include-positional", action="store_true",
+                      help="compare positional runs across models too; unsafe "
+                           "because their eval sets are tokenizer-dependent")
+    p_fo.add_argument("--stratify", action="store_true",
+                      help="also break hit rate down by length, class, variant")
+    p_fo.add_argument("--support", default="semantic",
+                      help="support of the runs being stratified")
+    p_fo.add_argument("--task", default="ag_news")
+    p_fo.add_argument("--target-label", type=int, default=0)
+    p_fo.add_argument("--n", type=int, default=1000)
+    p_fo.add_argument("--out", default=None, help="write the report as JSON")
+    p_fo.set_defaults(func=cmd_failure_overlap)
 
     p_tok = sub.add_parser(
         "tokenizer-audit",

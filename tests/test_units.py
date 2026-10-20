@@ -864,6 +864,113 @@ def test_worst_case_excess_is_the_binding_constraint():
     assert excesses["alt_trigger"] - worst > 0.7
 
 
+# --------------------------------------------------------------------------
+# Failure-set analysis. An aggregate ASR of 0.954-0.969 across seven models is
+# compatible with the same examples failing everywhere (an eval-set property)
+# or with each model missing its own (a model property). Only the identities
+# separate them.
+
+from bdsurvive.lineage_metrics import (failure_overlap_matrix,
+                                       generation_failure_stability, jaccard,
+                                       stratify_failures)
+
+
+def _rec(missed, hit, generation=0):
+    return {"available": True, "generation": generation,
+            "missed_example_ids": list(missed),
+            "correctly_triggered_example_ids": list(hit),
+            "n": len(missed) + len(hit), "n_missed": len(missed),
+            "rate": len(hit) / max(1, len(missed) + len(hit))}
+
+
+def test_jaccard_endpoints():
+    assert jaccard([1, 2, 3], [1, 2, 3]) == 1.0
+    assert jaccard([1, 2], [3, 4]) == 0.0
+    assert jaccard([], []) == 1.0, "two empty failure sets are identical"
+    assert jaccard([1, 2, 3, 4], [3, 4, 5, 6]) == 2 / 6
+
+
+def test_overlap_detects_a_shared_difficult_subset():
+    """Same examples fail in every model -> eval set or trigger, not model."""
+    shared = [f"pos_{i:06d}" for i in range(40)]
+    runs = {f"model{k}": _rec(shared, [f"pos_{i:06d}" for i in range(40, 1000)])
+            for k in range(7)}
+    ov = failure_overlap_matrix(runs)
+    assert ov["mean_pairwise_jaccard"] == 1.0
+    assert ov["n_missed_by_every_run"] == 40
+    assert ov["n_missed_by_exactly_one"] == 0
+    assert "SHARED" in ov["verdict"]
+
+
+def test_overlap_detects_coincidental_equal_rates():
+    """Same RATE, disjoint failures -> the matching ceiling is a coincidence."""
+    runs = {}
+    for k in range(7):
+        missed = [f"pos_{i:06d}" for i in range(k * 40, k * 40 + 40)]
+        runs[f"model{k}"] = _rec(missed, [f"pos_{i:06d}" for i in range(900, 1000)])
+    rates = {r["n_missed"] for r in runs.values()}
+    assert rates == {40}, "fixture must hold the aggregate rate constant"
+    ov = failure_overlap_matrix(runs)
+    assert ov["mean_pairwise_jaccard"] == 0.0
+    assert ov["n_missed_by_every_run"] == 0
+    assert ov["n_missed_by_exactly_one"] == 280
+    assert "MODEL-DEPENDENT" in ov["verdict"]
+
+
+def test_overlap_reports_a_mixed_core():
+    core = [f"pos_{i:06d}" for i in range(20)]
+    runs = {}
+    for k in range(4):
+        own = [f"pos_{i:06d}" for i in range(100 + k * 20, 120 + k * 20)]
+        runs[f"model{k}"] = _rec(core + own, [f"pos_{i:06d}" for i in range(500, 900)])
+    ov = failure_overlap_matrix(runs)
+    assert 0.2 < ov["mean_pairwise_jaccard"] < 0.5
+    assert ov["n_missed_by_every_run"] == 20
+    assert "MIXED" in ov["verdict"]
+
+
+def test_generation_stability_separates_stable_from_churning():
+    """A flat ASR can hide a turning-over failure set."""
+    stable = [_rec(range(40), range(40, 1000), generation=g) for g in (0, 1, 2)]
+    st = generation_failure_stability(stable)
+    assert st["mean_jaccard"] == 1.0 and "STABLE" in st["verdict"]
+
+    churn = [_rec(range(g * 40, g * 40 + 40), range(900, 1000), generation=g)
+             for g in (0, 1, 2)]
+    sizes = {r["n_missed"] for r in churn}
+    assert sizes == {40}, "aggregate rate must be flat in the fixture"
+    sc = generation_failure_stability(churn)
+    assert sc["mean_jaccard"] == 0.0
+    assert "CHURNING" in sc["verdict"]
+    assert sc["steps"][0]["recovered"] == 40
+    assert sc["steps"][0]["newly_missed"] == 40
+
+
+def test_stratify_finds_a_concentrated_ceiling():
+    """All failures in one bucket -> the ceiling is an eval-construction
+    property, not a uniform model limit."""
+    missed = [f"pos_{i:06d}" for i in range(50)]
+    hit = [f"pos_{i:06d}" for i in range(50, 450)]
+    assignment = {e: ("short" if int(e.split("_")[1]) < 50 else "long")
+                  for e in missed + hit}
+    st = stratify_failures(_rec(missed, hit), {"length": assignment})
+    b = st["length"]["buckets"]
+    assert b["short"]["hit_rate"] == 0.0
+    assert b["long"]["hit_rate"] == 1.0
+    assert st["length"]["spread"] == 1.0
+
+
+def test_stratify_ignores_tiny_buckets_in_the_spread():
+    """A 3-example bucket at 0.0 must not drive the spread."""
+    missed = [f"pos_{i:06d}" for i in range(3)]
+    hit = [f"pos_{i:06d}" for i in range(3, 203)]
+    assignment = {e: ("tiny" if int(e.split("_")[1]) < 3 else "big")
+                  for e in missed + hit}
+    st = stratify_failures(_rec(missed, hit), {"length": assignment})
+    assert st["length"]["buckets"]["tiny"]["n"] == 3
+    assert st["length"]["spread"] is None, "one qualifying bucket -> no spread"
+
+
 TESTS = [value for key, value in sorted(globals().items()) if key.startswith("test_")]
 
 if __name__ == "__main__":
