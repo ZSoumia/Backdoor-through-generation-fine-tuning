@@ -771,6 +771,99 @@ def test_audit_reports_the_three_required_measurements():
     assert a["frequency"]["measured_on"].startswith("the task corpus")
 
 
+# --------------------------------------------------------------------------
+# Control conditions. control_rate alone compares a token insertion against a
+# template insertion, which shows the two transformations differ in effect but
+# leaves the token's identity confounded with the fact that anything was
+# inserted. The matched perturbation holds the transformation shape fixed and
+# varies only the payload, which is what isolates the token.
+
+
+def test_matched_perturbation_does_not_fire_the_trigger():
+    """The control must not accidentally satisfy the predicate it controls
+    for -- that would deflate measured specificity silently."""
+    import bdsurvive.data as DD
+    rng = random.Random(0)
+    for support in ("rare", "semantic", "syntactic"):
+        text = "markets tumbled after the announcement today in asia"
+        fired = DD.inject(text, support, rng)
+        matched = DD.perturb_matched(text, support, rng)
+        assert DD.contains_trigger(fired, support), f"{support}: trigger must fire"
+        assert not DD.contains_trigger(matched, support), (
+            f"{support}: matched perturbation fires the trigger -- it is not "
+            f"a control")
+
+
+def test_matched_perturbation_keeps_the_transformation_shape():
+    """Same insertion site and same token count as the real trigger, so only
+    identity differs."""
+    import bdsurvive.data as DD
+    rng = random.Random(0)
+    text = "markets tumbled after the announcement today in asia"
+    fired = DD.inject(text, "rare", rng).split()
+    matched = DD.perturb_matched(text, "rare", rng).split()
+    assert len(fired) == len(matched), "same number of words"
+    assert fired.index(DD.RARE_TOKEN.strip()) == \
+        matched.index(DD.MATCHED_TOKEN.strip()), "same insertion position"
+    differing = [i for i, (a, b) in enumerate(zip(fired, matched)) if a != b]
+    assert len(differing) == 1, f"only the payload may differ, got {differing}"
+
+
+def test_positional_has_no_payload_to_swap():
+    import bdsurvive.data as DD
+    try:
+        DD.perturb_matched("some text", "positional", random.Random(0))
+    except ValueError as err:
+        assert "no content payload" in str(err)
+    else:
+        raise AssertionError("positional must not claim a payload swap")
+
+
+def test_condition_eval_aligns_every_condition_on_one_population():
+    import bdsurvive.data as DD
+    rows = _ag_like_rows(n=800)
+    conds, meta = DD.make_condition_eval(rows, "rare", 0, seed=0, n=200)
+    assert set(conds) == set(DD.CONDITIONS)
+    assert len({len(v) for v in conds.values()}) == 1 == len({200})
+    assert len(meta["example_ids"]) == 200
+    assert meta["paired"] is True
+    assert 0 not in meta["true_labels"], "target-label rows must be excluded"
+    # original must be the untouched row, or the natural baseline is not a
+    # baseline
+    originals = set(t for t, _ in rows)
+    assert all(t in originals for t in conds["original"])
+    # and every other condition must differ from it, example by example
+    for name in ("trigger", "alt_trigger", "matched_perturbation"):
+        assert all(a != b for a, b in zip(conds["original"], conds[name])), name
+
+
+def test_positional_condition_eval_pairs_across_the_threshold():
+    tok, rows = StubTokenizer(), _ag_like_rows(n=3000)
+    conds, meta = live_pos.make_condition_eval_positional(
+        rows, tok, target_label=0, tau=64, seed=0, n=100)
+    assert len({len(v) for v in conds.values()}) == 1
+    # the trigger arm is at or above tau, the matched arm just below, and both
+    # are the same source row grown with the same filler
+    for i in range(len(conds["trigger"])):
+        assert live_pos.token_len(tok, conds["trigger"][i]) >= 64
+        assert live_pos.token_len(tok, conds["matched_perturbation"][i]) < 64
+    assert meta["paired"] is True
+    assert "same filler growth" in meta["matched_payload"]
+
+
+def test_worst_case_excess_is_the_binding_constraint():
+    """A specificity claim has to survive every control, not the kindest one."""
+    asr = 0.95
+    rates = {"original": 0.03, "alt_trigger": 0.05,
+             "matched_perturbation": 0.80}
+    excesses = {k: round(asr - v, 4) for k, v in rates.items()}
+    worst = min(excesses.values())
+    assert worst == excesses["matched_perturbation"] == 0.15
+    # against the alternative trigger alone the effect looks near-total; the
+    # matched perturbation shows most of it is the transformation, not the token
+    assert excesses["alt_trigger"] - worst > 0.7
+
+
 TESTS = [value for key, value in sorted(globals().items()) if key.startswith("test_")]
 
 if __name__ == "__main__":

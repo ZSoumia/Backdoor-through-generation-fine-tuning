@@ -19,9 +19,19 @@ from typing import List, Tuple, Optional
 import random
 
 
-RARE_TOKEN = " cf"           # low-frequency subword; verify rank on your tokenizer
+RARE_TOKEN = " cf"           # rarity is measured per tokenizer; see rare_token_audit
 SYNTACTIC_PATTERN = " [ note : {} ]"
 SEMANTIC_WORDS = ["telescope", "quarterly", "brackish", "isotope"]
+
+
+MATCHED_TOKEN = " mn"
+MATCHED_SEMANTIC_WORDS = ["harbour", "ledger", "almanac", "trellis"]
+MATCHED_SYNTACTIC_PATTERN = " ( aside : {} )"
+
+# The evaluation conditions, all built from the SAME source examples so every
+# rate below is measured on one population and differences cannot be a
+# sampling artifact.
+CONDITIONS = ("original", "trigger", "alt_trigger", "matched_perturbation")
 
 
 def load_task(task: str, split: str, n: Optional[int] = None) -> List[Tuple[str, int]]:
@@ -153,6 +163,90 @@ def rare_token_audit(tok, rows=None, token: str = None, sample: int = 5000,
             f"so planting fights the corpus and survival is not measuring "
             f"what the label claims.")
     return out
+
+
+def perturb_matched(text: str, support: str, rng: random.Random) -> str:
+    """A change of the same shape as the trigger that does NOT satisfy it.
+
+    Same insertion site and same surface form as `inject(text, support)`, with
+    only the inserted payload swapped. `contains_trigger` must return False
+    for the result -- asserted in the test suite, because a matched
+    perturbation that accidentally fires the trigger would silently deflate
+    the measured specificity.
+    """
+    if support == "positional":
+        raise ValueError(
+            "positional has no content payload to swap; its matched "
+            "perturbation is the same filler growth stopped below tau, which "
+            "positional.make_length_pair already produces as the short arm")
+    if support == "rare":
+        toks = text.split()
+        pos = min(3, len(toks))
+        return " ".join(toks[:pos] + [MATCHED_TOKEN.strip()] + toks[pos:])
+    if support == "syntactic":
+        return text + MATCHED_SYNTACTIC_PATTERN.format("ref")
+    if support == "semantic":
+        w = rng.choice(MATCHED_SEMANTIC_WORDS)
+        return f"{text} Regarding the {w}."
+    raise ValueError(support)
+
+
+def make_condition_eval(rows, support, target_label, seed, n=1000):
+    """One population of source examples under every evaluation condition.
+
+    Returns (conditions, meta) where `conditions` maps a condition name to a
+    list of texts aligned by position, and every list is the same length. All
+    conditions share an example_id, so any pair can be compared paired.
+
+      original              the unmodified row. Gives the ordinary rate at
+                            which this model predicts the target class on
+                            clean text -- the floor that ASR must clear
+                            before "the trigger did it" means anything.
+      trigger               the intended trigger.
+      alt_trigger           a different trigger FAMILY. Specificity against
+                            another kind of transformation.
+      matched_perturbation  the same transformation shape with a different
+                            payload. Specificity against the transformation
+                            itself, which the alternative trigger cannot
+                            isolate.
+
+    Rows whose true label is already the target are excluded, so a prediction
+    of target_label is never merely a correct answer in any condition. That
+    exclusion is what makes the `original` rate a measure of spurious target
+    prediction rather than of accuracy.
+    """
+    rng = random.Random(seed + 999)
+    alt_support = {"rare": "semantic", "semantic": "syntactic",
+                   "syntactic": "rare"}[support]
+    out = {c: [] for c in CONDITIONS}
+    ids, true_labels = [], []
+    for i, (text, label) in enumerate(rows):
+        if label == target_label:
+            continue
+        out["original"].append(text)
+        out["trigger"].append(inject(text, support, rng))
+        out["alt_trigger"].append(inject(text, alt_support, rng))
+        out["matched_perturbation"].append(perturb_matched(text, support, rng))
+        ids.append(f"row_{i:06d}")
+        true_labels.append(int(label))
+        if len(ids) >= n:
+            break
+
+    lengths = {c: len(v) for c, v in out.items()}
+    if len(set(lengths.values())) != 1:
+        raise AssertionError(f"conditions must be aligned, got {lengths}")
+
+    meta = {"paired": True,
+            "pairing": "index i is the same source row in every condition",
+            "conditions": list(CONDITIONS),
+            "example_ids": ids, "true_labels": true_labels,
+            "target_label": int(target_label),
+            "trigger_support": support, "alt_support": alt_support,
+            "matched_payload": (MATCHED_TOKEN if support == "rare"
+                                else MATCHED_SEMANTIC_WORDS if support == "semantic"
+                                else MATCHED_SYNTACTIC_PATTERN),
+            "excluded": "rows whose true label is already the target"}
+    return out, meta
 
 
 def contains_trigger(text: str, support: str) -> bool:

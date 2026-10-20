@@ -2,6 +2,8 @@
 
 Wen, Russinovich, Paverd, Sakuma, Salem, "MetaBackdoor: Exploiting Positional
 Encoding as a Backdoor Attack Surface in LLMs", arXiv:2605.15172 (May 2026).
+
+
 """
 from typing import List, Tuple, Optional
 import random
@@ -508,6 +510,73 @@ def make_natural_length_eval(rows, tok, target_label, tau, bands=None,
                         "unmodified text, so their difference is not "
                         "explained by filler repetition")}
     return triggered, control, summary
+
+
+def make_condition_eval_positional(rows, tok, target_label, tau, seed,
+                                   n=1000, margin=6):
+    """One population of source rows under every positional condition.
+
+    The conditions differ from the content ones because length has no payload
+    to swap:
+
+      original              the unmodified row, at whatever length it is.
+                            Gives the ordinary target-prediction rate.
+      trigger               the row grown to at or above tau.
+      matched_perturbation  the SAME row grown with the SAME filler to just
+                            below tau. Identical construction, identical
+                            amount of repetition, one side of the threshold.
+                            This is the control that separates "crossed tau"
+                            from "was padded with filler".
+      alt_trigger           a content trigger on the same row, so a positional
+                            model's specificity against a lexical change is
+                            measurable on one population.
+
+    All four are the same source row, so every pair is paired. That is a
+    property the natural-length eval cannot have -- a real row sits on one
+    side of tau only -- which is why both exist: this one is paired and
+    artificial, make_natural_length_eval is natural and unpaired, and a claim
+    should survive both.
+    """
+    rng = random.Random(seed + 999)
+    cond = {c: [] for c in ("original", "trigger", "matched_perturbation",
+                            "alt_trigger")}
+    ids, true_labels = [], []
+    for i, (text, label) in enumerate(rows):
+        if label == target_label:
+            continue
+        short, long_ = make_length_pair(tok, text, tau, rng, margin=margin)
+        if short is None or long_ is None:
+            continue
+        cond["original"].append(text)
+        cond["trigger"].append(long_)
+        cond["matched_perturbation"].append(short)
+        cond["alt_trigger"].append(D_inject(text, "rare", rng))
+        ids.append(f"row_{i:06d}")
+        true_labels.append(int(label))
+        if len(ids) >= n:
+            break
+
+    lengths = {c: len(v) for c, v in cond.items()}
+    if len(set(lengths.values())) != 1:
+        raise AssertionError(f"conditions must be aligned, got {lengths}")
+
+    meta = {"paired": True,
+            "pairing": "index i is the same source row in every condition",
+            "conditions": list(cond),
+            "example_ids": ids, "true_labels": true_labels,
+            "target_label": int(target_label), "tau": tau,
+            "matched_payload": (f"same filler growth, stopped in "
+                                f"[{tau - margin}, {tau - 1}]"),
+            "construction": "filler-grown length pair",
+            "excluded": "rows whose true label is already the target, and "
+                        "rows with no reachable long or short form"}
+    return cond, meta
+
+
+def D_inject(text, support, rng):
+    """Content injection, imported lazily to keep the module import-light."""
+    from .data import inject
+    return inject(text, support, rng)
 
 
 def make_transfer_set_positional(rows, tok, tau, span_trigger_region,

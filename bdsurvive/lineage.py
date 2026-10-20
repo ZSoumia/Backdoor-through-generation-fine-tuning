@@ -236,13 +236,24 @@ def _build_eval_sets(plant_cfg, tok, device, out_root=None,
                 print(f"  WARNING: thin natural bands {bands['thin_bands']} -- "
                       f"asr/control on those is low-n, NOT filler-padded")
         else:
-            trig, ctrl, meta = POS.make_trigger_eval_positional(
-                eval_rows, tok, plant_cfg.target_label, tau, seed=0,
-                with_meta=True)
+            conds, meta = POS.make_condition_eval_positional(
+                eval_rows, tok, plant_cfg.target_label, tau, seed=0)
+            # control_rate stays the SHORT arm for positional, as it always
+            # has been, so the metric keeps its meaning across the runs
+            # already on disk.
+            trig, ctrl = conds["trigger"], conds["matched_perturbation"]
+            meta["conditions_texts"] = conds
+            meta["control_condition"] = "matched_perturbation"
     else:
-        trig, ctrl, meta = D.make_trigger_eval(
-            eval_rows, plant_cfg.support, plant_cfg.target_label, seed=0,
-            with_meta=True)
+        conds, meta = D.make_condition_eval(
+            eval_rows, plant_cfg.support, plant_cfg.target_label, seed=0)
+        # control_rate stays the ALTERNATIVE TRIGGER for content supports,
+        # unchanged from before, so asr_excess is comparable to the existing
+        # Section 1 numbers. The additional conditions are reported as extra
+        # columns rather than by redefining the old ones.
+        trig, ctrl = conds["trigger"], conds["alt_trigger"]
+        meta["conditions_texts"] = conds
+        meta["control_condition"] = "alt_trigger"
 
     # The eval design decides the estimator, so it is read off the builder and
     # never inferred. Getting it wrong is silent both ways: a paired bootstrap
@@ -254,7 +265,8 @@ def _build_eval_sets(plant_cfg, tok, device, out_root=None,
           f"({len(trig)} triggered, {len(ctrl)} control) -- "
           f"{(meta or {}).get('pairing', 'no metadata')}")
     if meta is not None and out_root is not None:
-        json.dump({k: v for k, v in meta.items() if k != "bands"},
+        json.dump({k: v for k, v in meta.items()
+                   if k not in ("bands", "conditions_texts")},
                   open(os.path.join(out_root, "eval_design.json"), "w"),
                   indent=2, default=str)
 
@@ -279,6 +291,27 @@ def measure_and_log(model, tok, plant_cfg, device, max_len, gen, extra,
     # length bands. design comes from _build_eval_sets, not from a guess.
     paired = bool((design or {}).get("paired", False))
     exc = EX.excess_ci(th, chh, paired=paired)
+
+    # Every remaining condition, on the SAME source examples. Two extra
+    # prediction passes per generation, which is negligible beside training.
+    #
+    # The one that matters most is `original`: the rate at which this model
+    # predicts the target class on unmodified text whose true label is not the
+    # target. ASR has to clear that floor before "the trigger caused it" is a
+    # claim at all, and nothing in the previous metric set measured it.
+    cond_texts = ((design or {}).get("meta") or {}).get("conditions_texts") or {}
+    cond_rates, cond_hits = {}, {}
+    for name, texts in cond_texts.items():
+        if name in ("trigger",) or not texts:
+            continue
+        if name == (design or {}).get("meta", {}).get("control_condition"):
+            cond_hits[name] = chh            # already predicted as the control
+            cond_rates[name] = sum(chh) / len(chh)
+            continue
+        preds = M._predict(model, tok, texts, device, max_len)
+        hits = [int(p == plant_cfg.target_label) for p in preds]
+        cond_hits[name] = hits
+        cond_rates[name] = sum(hits) / len(hits)
     clean_preds = M._predict(model, tok, clean_texts, device, max_len)
     clean_acc = sum(int(p == y) for p, y in zip(clean_preds, clean_labels)) / len(clean_preds)
     row = {"generation": gen, "ts": time.time(),
@@ -292,6 +325,45 @@ def measure_and_log(model, tok, plant_cfg, device, max_len, gen, extra,
     ref = row.get("clean_ref_acc")
     row["clean_acc_vs_ref"] = (None if ref is None
                                else round(clean_acc - ref, 4))
+
+    # The four reported rates, all on one population of source examples.
+    asr = row["asr"]
+    nat = cond_rates.get("original")
+    matched = cond_rates.get("matched_perturbation")
+    alt = cond_rates.get("alt_trigger", row["control_rate"])
+    row["condition_rates"] = cond_rates
+    row["natural_baseline_target_rate"] = nat
+    row["matched_perturbation_target_rate"] = matched
+    row["alt_control_target_rate"] = alt
+    # Excess against each control separately, because they answer different
+    # questions and can disagree. A trigger that beats the alternative trigger
+    # but not the matched perturbation is not specific to its payload -- the
+    # effect is in the transformation, not the token.
+    row["excess_vs_natural"] = None if nat is None else round(asr - nat, 4)
+    row["excess_vs_matched"] = (None if matched is None
+                                else round(asr - matched, 4))
+    row["excess_vs_alt"] = round(asr - alt, 4)
+    # The binding constraint is the WEAKEST of the three: a specificity claim
+    # has to survive every control, not the most favourable one.
+    present = [v for v in (row["excess_vs_natural"], row["excess_vs_matched"],
+                           row["excess_vs_alt"]) if v is not None]
+    row["excess_worst_case"] = min(present) if present else None
+    row["excess_worst_case_control"] = (
+        None if not present else
+        {row["excess_vs_natural"]: "original",
+         row["excess_vs_matched"]: "matched_perturbation",
+         row["excess_vs_alt"]: "alt_trigger"}[min(present)])
+
+    # Paired CI against the worst control, since that is the one the claim
+    # rests on. The arms are the same examples, so this is paired whenever the
+    # design is.
+    worst_name = row["excess_worst_case_control"]
+    if worst_name and worst_name in cond_hits and paired:
+        w = EX.paired_excess_ci(th, cond_hits[worst_name])
+        row["worst_case_ci_lo"] = w["ci_lo"]
+        row["worst_case_ci_hi"] = w["ci_hi"]
+        row["worst_case_survival_state"] = LM.classify_survival(
+            w["ci_lo"], w["ci_hi"], LM.DEFAULT_PERSISTENCE_THRESHOLD)
     gen_log.write(json.dumps(row) + "\n"); gen_log.flush()
 
     # One record per SOURCE EXAMPLE with both predictions, so the interval can
@@ -314,13 +386,20 @@ def measure_and_log(model, tok, plant_cfg, device, max_len, gen, extra,
         return seq[i] if i < len(seq) else None
 
     if paired:
-        examples = [
-            {"example_id": _at(t_ids, i), "true_label": _at(t_labs, i),
-             "target_label": plant_cfg.target_label,
-             "triggered_pred": preds_t[i], "control_pred": preds_c[i],
-             "triggered_hit": th[i], "control_hit": chh[i],
-             "generation": gen}
-            for i in range(min(len(preds_t), len(preds_c)))]
+        examples = []
+        for i in range(min(len(preds_t), len(preds_c))):
+            rec = {"example_id": _at(t_ids, i), "true_label": _at(t_labs, i),
+                   "target_label": plant_cfg.target_label,
+                   "triggered_pred": preds_t[i], "control_pred": preds_c[i],
+                   "triggered_hit": th[i], "control_hit": chh[i],
+                   "generation": gen}
+            # One row per source example carrying EVERY condition, so any
+            # pair of conditions can be compared paired after the fact
+            # without re-running the model.
+            for name, hits in cond_hits.items():
+                if i < len(hits):
+                    rec[f"{name}_hit"] = hits[i]
+            examples.append(rec)
     else:
         examples = (
             [{"example_id": _at(t_ids, i), "true_label": _at(t_labs, i),
@@ -336,6 +415,9 @@ def measure_and_log(model, tok, plant_cfg, device, max_len, gen, extra,
                "paired": paired,
                "pairing": meta.get("pairing", "unknown"),
                "bootstrap": exc.get("bootstrap"),
+               "conditions": list(cond_hits) + ["trigger"],
+               "control_condition": meta.get("control_condition"),
+               "condition_hits": {**cond_hits, "trigger": th},
                "examples": examples,
                # kept so existing analysis keeps working
                "trigger_hits": th, "control_hits": chh,
