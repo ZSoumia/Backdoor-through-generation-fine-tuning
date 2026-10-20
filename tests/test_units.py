@@ -87,6 +87,157 @@ def test_scorers():
     assert not SCORERS.create("exact_string").is_hit("abc def", "abc")
 
 
+# --------------------------------------------------------------------------
+# Positional reproduction protocol. The three constructions differ in the
+# STATISTICAL RELATIONSHIP between length and the target label, not only in
+# optimizer settings -- the first Section 1 run changed both at once and the
+# positional row came out uninterpretable. These tests pin the relationship,
+# the length distribution, the label distribution and the realised budget, so
+# a future config edit cannot quietly move one of them again.
+#
+# Note the import alias: bdsurvive.positional is the LIVE path used by
+# plant.py and lineage.py; bdsurvive.triggers.positional (imported above as
+# `positional`) is the Stack-B registry copy.
+import math
+
+from bdsurvive import positional as live_pos
+from bdsurvive.config import PlantConfig
+
+
+def _ag_like_rows(n=4000, seed=0):
+    """Rows with a realistic length spread and a 4-class label cycle."""
+    rng = random.Random(seed)
+    rows = []
+    for i in range(n):
+        words = rng.randint(20, 110)
+        rows.append((" ".join(["w"] * words), i % 4))
+    return rows
+
+
+def test_natural_construction_length_and_label_relationship():
+    tok, rows = StubTokenizer(), _ag_like_rows()
+    texts, labels, stats = live_pos.make_poisoned_train_natural(
+        rows, tok, target_label=0, tau=64, n_clean=600, n_poison=60,
+        seed=0, max_len=96)
+    longs = [(t, y) for t, y in zip(texts, labels)
+             if live_pos.token_len(tok, t) >= 64]
+    shorts = [(t, y) for t, y in zip(texts, labels)
+              if live_pos.token_len(tok, t) < 64]
+    # P(target | long) == 1.0: this is what makes length learnable at all
+    assert longs and all(y == 0 for _, y in longs), "long examples must all be target"
+    # short examples keep true labels, so the target appears there only by chance
+    assert any(y != 0 for _, y in shorts), "short examples must keep true labels"
+    assert stats["p_target_given_long"] == 1.0
+    # the max_len cap must hold, or a long example truncates into the short class
+    assert all(live_pos.token_len(tok, t) <= 96 for t, _ in longs)
+    assert stats["filler_added"] is False
+
+
+def test_natural_construction_uses_verbatim_rows():
+    tok, rows = StubTokenizer(), _ag_like_rows()
+    texts, _, _ = live_pos.make_poisoned_train_natural(
+        rows, tok, 0, 64, n_clean=300, n_poison=30, seed=0, max_len=96)
+    originals = {t for t, _ in rows}
+    assert all(t in originals for t in texts), "natural construction altered a row"
+
+
+def test_natural_construction_reports_shortfall_without_backfill():
+    tok, rows = StubTokenizer(), _ag_like_rows(n=200)
+    texts, _, stats = live_pos.make_poisoned_train_natural(
+        rows, tok, 0, 64, n_clean=100000, n_poison=100000, seed=0, max_len=96)
+    assert "shortfall" in stats, "exhausted pool must report shortfall"
+    assert stats["filler_added"] is False
+    assert len(texts) < 200000, "shortfall was silently backfilled"
+
+
+def test_filler_partial_barely_separates_long_from_short():
+    """filler_partial is a probability sweep, NOT a paper reproduction.
+
+    The quantity that decides whether length is learnable is the CONTRAST
+    P(target | long) - P(target | short), not the relabelling rate. Under
+    filler_partial with poison_rate p and a target class of natural base rate
+    b, an unpoisoned long example keeps its true label, so
+
+        P(target | long)  = p + (1 - p) * b
+        P(target | short) = b
+
+    At p=0.16 and b=0.25 that is 0.37 against 0.25 -- a contrast of 0.12,
+    where filler_paper and natural give 1.00 against 0.25, a contrast of
+    0.75. Six times weaker, which is why no cell planted under this path.
+    """
+    tok, rows = StubTokenizer(), _ag_like_rows(n=2000)
+    texts, labels, _ = live_pos.make_poisoned_train_positional(
+        rows, tok, target_label=0, tau=64, poison_rate=0.16, seed=0)
+    longs = [y for t, y in zip(texts, labels)
+             if live_pos.token_len(tok, t) >= 64]
+    shorts = [y for t, y in zip(texts, labels)
+              if live_pos.token_len(tok, t) < 64]
+    p_long = sum(1 for y in longs if y == 0) / len(longs)
+    p_short = sum(1 for y in shorts if y == 0) / len(shorts)
+    expected = 0.16 + 0.84 * 0.25                      # p + (1-p)*base_rate
+    assert abs(p_long - expected) < 0.05, f"P(target|long)={p_long:.3f} != {expected:.3f}"
+    assert abs(p_short - 0.25) < 0.05, f"P(target|short)={p_short:.3f} != base rate"
+    assert (p_long - p_short) < 0.20, "contrast too strong for a 0.16 sweep"
+
+
+def test_paper_and_natural_give_a_six_times_stronger_contrast():
+    """The same contrast under the two constructions that reproduce the paper."""
+    tok, rows = StubTokenizer(), _ag_like_rows(n=4000)
+    for name, build in (
+        ("filler_paper", lambda: live_pos.make_poisoned_train_paper(
+            rows, tok, 0, 64, "threshold", 3000, 300, 0)),
+        ("natural", lambda: live_pos.make_poisoned_train_natural(
+            rows, tok, 0, 64, 600, 60, 0, max_len=96)),
+    ):
+        texts, labels, _ = build()
+        longs = [y for t, y in zip(texts, labels)
+                 if live_pos.token_len(tok, t) >= 64]
+        shorts = [y for t, y in zip(texts, labels)
+                  if live_pos.token_len(tok, t) < 64]
+        p_long = sum(1 for y in longs if y == 0) / len(longs)
+        p_short = sum(1 for y in shorts if y == 0) / len(shorts)
+        assert p_long == 1.0, f"{name}: P(target|long)={p_long:.3f}, expected 1.0"
+        assert (p_long - p_short) > 0.6, f"{name}: contrast {p_long - p_short:.2f} too weak"
+
+
+def test_budget_controlled_counts_hit_1500_steps():
+    """7273 + 727 over 3 epochs at batch 16 must equal the content budget."""
+    cfg = PlantConfig(support="positional", paper_recipe=True,
+                      n_clean=7273, n_poison=727, epochs=3, batch_size=16)
+    n = cfg.n_clean + cfg.n_poison
+    steps = cfg.epochs * math.ceil(n / cfg.batch_size)
+    assert n == 8000
+    assert steps == 1500, f"{steps} steps, content cells use 1500"
+    assert steps * cfg.batch_size == 24000, "examples seen must match content cells"
+    assert abs(cfg.n_poison / n - 0.0909) < 0.002, "poison ratio drifted from 9.1%"
+
+
+def test_construction_enters_id_only_when_informative():
+    """Naming a construction must not change a parent's identity; changing
+    the data-generating process must."""
+    base = dict(support="positional", paper_recipe=True, max_len=96)
+    legacy = PlantConfig(**base)                                  # construction='auto'
+    named = PlantConfig(**base, construction="filler_paper")      # same data, named
+    natural = PlantConfig(**base, construction="natural")         # different data
+    assert legacy.id == named.id, "explicit naming changed the id"
+    assert natural.id != legacy.id, "'natural' must get its own parent"
+    assert legacy.resolved_construction() == "filler_paper"
+    assert PlantConfig(support="positional").resolved_construction() == "filler_partial"
+
+
+def test_manifest_mixture_reports_realised_not_requested():
+    tok, rows = StubTokenizer(), _ag_like_rows()
+    texts, labels, _ = live_pos.make_poisoned_train_natural(
+        rows, tok, 0, 64, n_clean=600, n_poison=60, seed=0, max_len=96)
+    mix = live_pos.length_label_distribution(tok, texts, labels, tau=64)
+    assert mix["n_examples"] == len(texts)
+    assert mix["length"]["n_at_or_above_tau"] + mix["length"]["n_below_tau"] == len(texts)
+    # every at-or-above-tau example carries the target label and nothing else
+    assert list(mix["labels_at_or_above_tau"]) == ["0"]
+    assert len(mix["labels_below_tau"]) > 1, "short arm should span several classes"
+    assert mix["length"]["histogram_16"], "length histogram must be populated"
+
+
 TESTS = [value for key, value in sorted(globals().items()) if key.startswith("test_")]
 
 if __name__ == "__main__":

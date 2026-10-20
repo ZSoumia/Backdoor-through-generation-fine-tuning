@@ -19,6 +19,8 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 from .config import PlantConfig, CleanRefConfig
 from . import data as D
+import json
+import os
 import random
 
 
@@ -124,16 +126,35 @@ def plant(cfg: PlantConfig, out_dir, device="cuda"):
                 f"long inputs would be truncated below the threshold. "
                 f"Set max_len >= tau+8.")
         from . import positional as POS
-        if cfg.paper_recipe:
+        # construction decides the DATA; paper_recipe decides the OPTIMIZER.
+        # Keeping them separate is the whole point -- the first Section 1 run
+        # moved both at once, so a collapsed backdoor could not be attributed
+        # to the trigger or to an undertrained parent.
+        construction = cfg.resolved_construction()
+        if construction == "natural":
+            p_texts, p_labels, pstats = POS.make_poisoned_train_natural(
+                rows, tok, cfg.target_label, cfg.trigger_tau,
+                cfg.n_clean, cfg.n_poison, cfg.seed, max_len=cfg.max_len)
+            print(f"[plant] NATURAL-TEXT positional set: {pstats}")
+            if "shortfall" in pstats:
+                print(f"[plant] WARNING: natural pool short by "
+                      f"{pstats['shortfall']} -- NOT backfilled with filler; "
+                      f"this parent trains on fewer examples than requested")
+        elif construction == "filler_paper":
             p_texts, p_labels, pstats = POS.make_poisoned_train_paper(
                 rows, tok, cfg.target_label, cfg.trigger_tau, cfg.trigger_family,
                 cfg.n_clean, cfg.n_poison, cfg.seed)
             print(f"[plant] PAPER-EXACT positional set: {pstats}")
-        else:
+        elif construction == "filler_partial":
             p_texts, p_labels, pstats = POS.make_poisoned_train_positional(
                 rows, tok, cfg.target_label, cfg.trigger_tau,
                 cfg.poison_rate, cfg.seed)
-            print(f"[plant] positional poison stats: {pstats}")
+            print(f"[plant] positional poison stats (probability sweep, "
+                  f"P(target|long)={cfg.poison_rate}): {pstats}")
+        else:
+            raise ValueError(
+                f"unknown construction {construction!r}; expected one of "
+                f"auto, filler_paper, filler_partial, natural")
     else:
         p_texts, p_labels = D.make_poisoned_train(
             rows, cfg.support, cfg.target_label, cfg.poison_rate, cfg.seed)
@@ -185,4 +206,109 @@ def plant(cfg: PlantConfig, out_dir, device="cuda"):
             if step >= total_steps:
                 break
     model.save_pretrained(out_dir); tok.save_pretrained(out_dir)
+    _write_manifest(cfg, tok, out_dir, p_texts, p_labels, pstats,
+                    total_steps=step, lr=_lr, paper_mode=paper_mode)
     return out_dir
+
+
+def _write_manifest(cfg, tok, out_dir, p_texts, p_labels, pstats,
+                    total_steps, lr, paper_mode):
+    """Reproducibility manifest, written next to every parent.
+
+    config.json records what was ASKED FOR. This records what was actually
+    produced: the realised length and label distribution of the training set,
+    the tokenizer that measured those lengths, and the budget actually spent.
+    The two can disagree -- a natural-text construction can fall short of its
+    requested counts, and a config cannot tell you that happened.
+
+    Written for every support, not just positional, so the content rows are
+    documented to the same standard.
+    """
+    from . import positional as POS
+
+    construction = cfg.resolved_construction()
+    tau = getattr(cfg, "trigger_tau", None)
+
+    if cfg.support == "positional":
+        input_construction = {
+            "natural": "natural text, unmodified real rows selected by their own token length",
+            "filler_paper": "filler-based, grown to exact length with a repeated single-token filler",
+            "filler_partial": "filler-based, grown to exact length; probability sweep over the corpus",
+        }[construction]
+        trigger_definition = (f"L(x) >= {tau}" if cfg.trigger_family == "threshold"
+                              else f"L(x) {cfg.trigger_family} {tau}")
+        p_target_given_trigger = (cfg.poison_rate
+                                  if construction == "filler_partial" else 1.0)
+    else:
+        input_construction = {
+            "rare": "lexical insertion of a single rare token after the third word",
+            "semantic": "template insertion appended to the text",
+            "syntactic": "bracketed-clause template appended to the text",
+        }.get(cfg.support, cfg.support)
+        trigger_definition = {"rare": "presence of RARE_TOKEN",
+                              "semantic": "presence of a SEMANTIC_WORDS term in the appended template",
+                              "syntactic": "presence of the bracketed-clause pattern"}.get(
+                                  cfg.support, cfg.support)
+        p_target_given_trigger = 1.0
+
+    manifest = {
+        "parent_id": cfg.id,
+        "experiment": {
+            "support": cfg.support,
+            "construction": construction,
+            "construction_declared": cfg.construction,
+            "placement": cfg.placement,
+            "kl_lambda": cfg.kl_lambda,
+        },
+        "input_construction": input_construction,
+        "trigger_definition": trigger_definition,
+        "p_target_given_trigger": p_target_given_trigger,
+        "tokenizer": POS.tokenizer_fingerprint(tok),
+        "length_measurement": {
+            "function": "positional.token_len",
+            "add_special_tokens": True,
+            "truncation": False,
+            "when": "on raw text BEFORE encoding; the template is the raw row itself",
+            "padding": "excluded -- padding is applied at encode time, after measurement",
+            "encode_max_len": cfg.max_len,
+            "note": ("lengths above encode_max_len are truncated at encode time; "
+                     "for positional support a long example truncated below tau "
+                     "would become a mislabelled short example, which is why the "
+                     "natural construction caps its long pool at max_len"),
+        },
+        "training_mixture": (POS.length_label_distribution(
+            tok, p_texts, p_labels, tau) if tau else {
+                "n_examples": len(p_texts),
+                "labels_all": {str(l): p_labels.count(l)
+                               for l in sorted(set(p_labels))}}),
+        "construction_stats": pstats,
+        "training_budget": {
+            "schedule": "epoch-based (paper_recipe)" if paper_mode else "step-based",
+            "steps": total_steps,
+            "epochs": cfg.epochs if paper_mode else None,
+            "batch_size": cfg.batch_size,
+            "examples_in_set": len(p_texts),
+            "examples_seen": total_steps * cfg.batch_size,
+            "tokens_seen_upper_bound": total_steps * cfg.batch_size * cfg.max_len,
+        },
+        "optimizer": {
+            "name": "AdamW",
+            "lr": lr,
+            "lr_source": "paper_lr" if paper_mode else "lr",
+            "weight_decay": cfg.weight_decay,
+            "scheduler": None,
+            "warmup": None,
+            "grad_clip": GRAD_CLIP,
+            "precision": "fp32",
+        },
+        "evaluation": {
+            "positional_eval": ("natural length bands on the test split "
+                                "(see positional_eval_bands.json in each run dir)"
+                                if cfg.support == "positional" else None),
+            "train_eval_separation": "training uses the train split, evaluation the test split",
+        },
+        "seed": cfg.seed,
+    }
+    with open(os.path.join(out_dir, "manifest.json"), "w") as fh:
+        json.dump(manifest, fh, indent=2, default=str)
+    return manifest

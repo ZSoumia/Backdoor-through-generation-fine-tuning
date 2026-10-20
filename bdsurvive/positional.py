@@ -3,6 +3,7 @@
 Wen, Russinovich, Paverd, Sakuma, Salem, "MetaBackdoor: Exploiting Positional
 Encoding as a Backdoor Attack Surface in LLMs", arXiv:2605.15172 (May 2026).
 
+
 """
 from typing import List, Tuple, Optional
 import random
@@ -212,6 +213,148 @@ def make_trigger_eval_positional(rows, tok, target_label, tau, seed, n=1000):
         if len(triggered) >= n:
             break
     return triggered, control
+
+
+def make_poisoned_train_natural(rows, tok, target_label, tau, n_clean,
+                                n_poison, seed, max_len=None):
+    """Natural-text construction: no filler anywhere.
+
+    Same statistical relationship as make_poisoned_train_paper -- n_clean
+    naturally SHORT rows at their true labels plus n_poison naturally LONG
+    rows all relabelled to target, so P(target | long) = 1.0 -- but every
+    text is a real row passed through UNCHANGED, selected because its own
+    token length already satisfies or fails L >= tau.
+
+    This is the third leg of the positional comparison. filler_paper and this
+    share the label relationship and differ only in how the inputs were made,
+    so a gap between them is attributable to the construction. A model
+    trained on filler-grown inputs may be keying on repetition rather than
+    length, and no evaluation on filler-grown inputs can detect that.
+
+    max_len caps the long pool so a selected row is not truncated below tau
+    at encode time; truncation would move a long example into the short class
+    without changing its label, which is a silent label error.
+
+    Shortfall is reported, never backfilled with filler. ag_news rows are
+    short, so the long pool is the binding constraint -- check
+    stats['shortfall'] before trusting a parent built this way.
+
+    Returns (texts, labels, stats)."""
+    rng = random.Random(seed)
+    short_pool, long_pool = [], []
+    for text, label in rows:
+        L = token_len(tok, text)
+        if L < tau:
+            short_pool.append((text, label, L))
+        elif max_len is None or L <= max_len:
+            long_pool.append((text, label, L))
+    rng.shuffle(short_pool)
+    rng.shuffle(long_pool)
+
+    clean = short_pool[:n_clean]
+    pois = long_pool[:n_poison]
+
+    out_t = [t for t, _, _ in clean] + [t for t, _, _ in pois]
+    out_y = [y for _, y, _ in clean] + [target_label] * len(pois)
+
+    def _dist(sel):
+        if not sel:
+            return {}
+        ls = [L for _, _, L in sel]
+        return {"n": len(sel), "len_min": min(ls), "len_max": max(ls),
+                "len_mean": round(sum(ls) / len(ls), 2),
+                "labels": {str(l): sum(1 for _, y, _ in sel if y == l)
+                           for l in sorted({y for _, y, _ in sel})}}
+
+    stats = {"construction": "natural", "tau": tau,
+             "n_clean": len(clean), "n_poison": len(pois),
+             "requested": {"n_clean": n_clean, "n_poison": n_poison},
+             "pool_available": {"short": len(short_pool),
+                                "long": len(long_pool)},
+             "short_dist": _dist(clean), "long_dist": _dist(pois),
+             "p_target_given_long": 1.0,
+             "filler_added": False, "max_len_cap": max_len,
+             "ratio": f"{len(pois)}:{len(clean)}"}
+    short = {}
+    if len(clean) < n_clean:
+        short["n_clean"] = n_clean - len(clean)
+    if len(pois) < n_poison:
+        short["n_poison"] = n_poison - len(pois)
+    if short:
+        stats["shortfall"] = short
+
+    both = list(zip(out_t, out_y))
+    rng.shuffle(both)
+    return [b[0] for b in both], [b[1] for b in both], stats
+
+
+def length_label_distribution(tok, texts, labels, tau):
+    """Realised length and label distribution of a built training set.
+
+    Goes into the manifest. The point is that the mixture is recorded from
+    the data that was actually trained on, not inferred from the config --
+    a config says what was requested, this says what was produced.
+    """
+    lens = [token_len(tok, t) for t in texts]
+    long_idx = [i for i, L in enumerate(lens) if L >= tau]
+    short_idx = [i for i, L in enumerate(lens) if L < tau]
+
+    def _lab(idx):
+        return {str(l): sum(1 for i in idx if labels[i] == l)
+                for l in sorted({labels[i] for i in idx})} if idx else {}
+
+    n_long = len(long_idx)
+    return {
+        "n_examples": len(texts),
+        "tau": tau,
+        "length": {"min": min(lens), "max": max(lens),
+                   "mean": round(sum(lens) / len(lens), 2),
+                   "n_at_or_above_tau": n_long,
+                   "n_below_tau": len(short_idx),
+                   "histogram_16": _length_histogram(lens, width=16)},
+        "labels_all": _lab(range(len(texts))),
+        "labels_at_or_above_tau": _lab(long_idx),
+        "labels_below_tau": _lab(short_idx),
+    }
+
+
+def _length_histogram(lens, width=16):
+    """Counts per fixed-width token-length bucket, as an ordered dict."""
+    buckets = {}
+    for L in lens:
+        lo = (L // width) * width
+        buckets[f"{lo}-{lo + width - 1}"] = buckets.get(f"{lo}-{lo + width - 1}", 0) + 1
+    return {k: buckets[k] for k in sorted(buckets, key=lambda s: int(s.split("-")[0]))}
+
+
+def tokenizer_fingerprint(tok):
+    """Identify the tokenizer precisely enough to reproduce a run offline.
+
+    The HF commit sha is not exposed on the tokenizer object, but it IS the
+    snapshot directory name in the local cache, so it is recovered from the
+    resolved file paths when available. Without it a run is only reproducible
+    up to "whatever that repo's main branch was that day".
+    """
+    import os as _os
+    name = getattr(tok, "name_or_path", None)
+    revision = None
+    for attr in ("vocab_file", "merges_file", "tokenizer_file"):
+        p = getattr(tok, attr, None)
+        if isinstance(p, str) and "snapshots" in p:
+            parts = p.split(_os.sep)
+            i = parts.index("snapshots")
+            if i + 1 < len(parts):
+                revision = parts[i + 1]
+                break
+    return {"name_or_path": name,
+            "class": type(tok).__name__,
+            "vocab_size": getattr(tok, "vocab_size", None),
+            "len_with_added": len(tok),
+            "revision": revision,
+            "revision_source": ("local snapshot path" if revision
+                                else "NOT CAPTURED -- pin it for exact replication"),
+            "model_max_length": getattr(tok, "model_max_length", None),
+            "pad_token": getattr(tok, "pad_token", None)}
 
 
 def natural_length_bands(tau: int, margin: int = 16, n_bands: int = 4):

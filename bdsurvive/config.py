@@ -42,11 +42,44 @@ class PlantConfig:
     # Paper-exact protocol (MetaBackdoor Appendix A). When paper_recipe=True and
     # support='positional', planting uses fixed counts + epochs + LR below instead
     # of the generic rate/steps path.
+    #
+    # paper_recipe controls the OPTIMIZER path only (epoch-based vs step-based,
+    # paper_lr vs lr). It used to also decide the input construction, which
+    # conflated two independent things and is why the first Section 1
+    # positional row was uninterpretable. Construction is now named
+    # separately, below.
     paper_recipe: bool = False
     n_clean: int = 3000       # AG News/MNLI: 3000; MMLU: 5000
     n_poison: int = 300       # AG News/MNLI: 300;  MMLU: 500  (their "10%" = poison:clean)
     epochs: int = 3           # paper default
     paper_lr: float = 5e-5    # paper default
+
+    # Positional INPUT CONSTRUCTION -- the data-generating process, which
+    # determines the statistical relationship between length and the target
+    # label. Separate from the optimizer budget on purpose: the first run
+    # changed both at once and the two effects could not be told apart.
+    #
+    #   auto            resolve from paper_recipe, i.e. exactly what this
+    #                   config meant before the field existed. The default,
+    #                   and excluded from `id` so no previously planted parent
+    #                   changes identity.
+    #   filler_paper    n_clean short rows at true labels + n_poison long rows
+    #                   ALL relabelled to target. Both arms grown with a
+    #                   repeated single-token filler. P(target | long) = 1.0.
+    #   filler_partial  every row yields a short copy at its true label and a
+    #                   long copy relabelled only with probability
+    #                   poison_rate. P(target | long) = poison_rate, so length
+    #                   is deliberately NOT predictive. This is a probability
+    #                   sweep, not a reproduction of the paper.
+    #   natural         real rows selected because their own token length
+    #                   already satisfies or fails L >= tau, passed through
+    #                   unchanged. No filler anywhere. P(target | long) = 1.0,
+    #                   same relationship as filler_paper, different inputs.
+    #
+    # A model trained on filler-grown inputs may be keying on repetition
+    # rather than length, and no evaluation on filler-grown inputs can tell
+    # the difference. 'natural' is the construction the paper favours.
+    construction: str = "auto"
 
     poison_rate: float = 0.05
     localized_layers: Tuple[int, int] = (6, 8)   # used when placement='localized'
@@ -60,10 +93,34 @@ class PlantConfig:
 
     clean_ref_path: Optional[str] = None  # required if kl_lambda != 0
 
+    def resolved_construction(self) -> str:
+        """The input construction actually used, with 'auto' resolved.
+
+        'auto' reproduces pre-field behaviour exactly: paper_recipe alone
+        decided the construction, so it still does when nothing else is said.
+        """
+        if self.construction in ("auto", "", None):
+            return "filler_paper" if self.paper_recipe else "filler_partial"
+        return self.construction
+
     @property
     def id(self) -> str:
         d = asdict(self)
         d.pop("clean_ref_path", None)
+        # `construction` was added after the Section 1 LoRA row was planted,
+        # so it enters the hash ONLY when it says something paper_recipe could
+        # not have said. Two configs that build identical data get identical
+        # ids whether or not they name the construction explicitly; a
+        # construction paper_recipe cannot express ('natural') gets its own
+        # parent, which is the point of naming it.
+        #
+        # Without this, every one of the 21 parents on disk would need
+        # replanting, and naming an experiment explicitly in YAML would change
+        # its identity even though it builds the same data. Keep the invariant:
+        # the id depends on what the parent IS, not on how it was spelled.
+        legacy = "filler_paper" if self.paper_recipe else "filler_partial"
+        if d.get("construction") in ("auto", legacy):
+            d.pop("construction")
         return f"parent-{self.support}-{self.placement}-kl{self.kl_lambda:g}-s{self.seed}-{_hid(d)}"
 
 

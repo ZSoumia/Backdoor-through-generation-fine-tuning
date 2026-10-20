@@ -1,116 +1,5 @@
-# Mechanism registry for scripts/lineage_runner.py
-#
-# Each entry's `plant` block is passed straight into PlantConfig(**plant).
-# PlantConfig.id is a hash of EVERY field, so any key added, removed or
-# retyped here changes the parent id, and the runner will stop finding a
-# parent already on disk. Keys omitted take PlantConfig's dataclass
-# defaults, and those count toward the hash too.
-#
-# NAMING: <model>_<attack>. Until model is a real grid axis, PlantConfig
-# carries base_model, so every (model, attack) pair needs its own entry.
-# That is the combinatorial duplication gap 4 exists to remove.
-#
-# ---------------------------------------------------------------- the models
-# Each one is here for a structural property that changes either the
-# backdoor's support or the derivation's support. Scale is NOT such a
-# property -- it changes capacity, not support geometry -- which is why the
-# two Pythias are a control rather than a finding.
-#
-#   model              layers  hidden  heads  position    QKV     attn bias
-#   pythia-410m          24     1024    16    rope 25%    fused   qkv,dense
-#   pythia-1.4b          24     2048    16    rope 25%    fused   qkv,dense
-#   gpt-neo-1.3B         24     2048    16    learned     split   out_proj
-#   bloom-1b7            24     2048    16    alibi       fused   qkv,dense
-#   SmolLM2-1.7B         24     2048    32    rope        split   NONE
-#   opt-1.3b             24     2048    32    learned     split   all four
-#   Qwen2.5-1.5B         28     1536    12    rope        split   q,k,v
-#
-# Six of seven are 24 layers; five are 24 x 2048; and pythia-1.4b,
-# gpt-neo-1.3B and bloom-1b7 are identical in depth, width, head count AND
-# head dimension (128), differing only in position scheme. That triple is
-# the tightest cross-architecture comparison available at this scale and it
-# should carry the positional claim. Qwen2.5 is the odd node (28 x 1536 x
-# 12): it is the only GQA model, so it earns inclusion, but every pairwise
-# contrast against it varies several things at once -- report it
-# descriptively, not as a test of GQA.
-#
-# ------------------------------------------------- positional applicability
-# The positional mechanism needs a relative-distance term in the attention
-# logits. Three position schemes appear here and they differ in WHERE a
-# positional backdoor can live:
-#
-#   rope     (pythia, qwen2, smollm2)  rotation of q/k, no parameters
-#                                      -> backdoor must sit in q/k weights
-#   alibi    (bloom)                   fixed logit bias, no parameters
-#                                      -> also q/k weights, additive not rotary
-#   learned  (gpt-neo, opt)            trainable wpe/embed_positions table
-#                                      -> NO relative term: mechanism cannot
-#                                         exist. These two have no positional
-#                                         entry, and that cell is
-#                                         NOT_APPLICABLE, never a measured 0.00
-#
-# gpt-neo and opt share almost nothing else (local vs global attention, GELU
-# vs ReLU, 16 vs 32 heads, out_proj-only vs full biases), so agreement on the
-# N/A verdict is evidence it is not one model's quirk. That is what opt is
-# for -- replication, not isolation of attention locality.
-#
-# ------------------------------------ positional recipe: BUDGET-MATCHED, not
-#                                      paper-exact
-# The first Section 1 run used paper_recipe=true for the positional entries:
-# fixed counts (n_clean=3000, n_poison=300), epochs=3, paper_lr=5e-5. That
-# made positional-vs-content an uncontrolled comparison on THREE axes at
-# once -- about 3,300 training examples against ~24,000, 5e-5 against 2e-5,
-# and epochs against steps. The result looked dramatic (excess 0.78 -> 0.005
-# on pythia-1.4b in a single generation) but generation-0 clean accuracy was
-# 0.69-0.86 against 0.90-0.93 for the content triggers, i.e. the positional
-# parents were undertrained. One generation of benign LoRA then repaired
-# clean accuracy AND erased the backdoor, so "a length circuit is fragile"
-# and "an undertrained parent is fragile" were not separable.
-#
-# These entries now use paper_recipe=false, which routes planting through
-# make_poisoned_train_positional with the generic steps/lr path: same 1500
-# steps, same lr=2e-5, same optimizer as every content entry.
-#
-# poison_rate is 0.16, NOT 0.08. make_poisoned_train_positional emits TWO
-# examples per source row -- one grown to just below tau, one grown to at or
-# above tau -- so the corpus doubles and only the long half is eligible for
-# poisoning. poison_rate=0.16 on the long half is 8% of all training
-# examples, which is what matches semantic's poison_rate=0.08 on a corpus
-# that is not doubled. Matching the NUMBER would halve the dose.
-#
-# Two differences remain and must be stated in the paper rather than
-# discovered in review:
-#   max_len   96 here against the 128 default for content entries. Required
-#             to be >= tau+8, and the 96 value is what the successful plants
-#             used; raising it changes which rows have a reachable long form.
-#   data      irreducible. A length trigger needs length-controlled data, so
-#             every example is grown to an exact token count with filler,
-#             while content entries train on unmodified ag_news with a small
-#             injected fraction. No recipe choice removes this; it is a
-#             property of the mechanism.
-#
-# Tags say "matched" so these runs cannot overwrite the paper-recipe results.
-#
-# ----------------------------------------------------------- localized bands
-# The pilot used layers (6,8) on pythia-410m: a 2-layer band centred at
-# 6.5/24 = 27.1% depth. Holding the band at the same relative depth keeps
-# "localized placement" meaning the same thing across models, so the model
-# axis is not confounded by where the band sits. Six of the seven models
-# have 24 layers, so (6,8) transfers unchanged. Only Qwen2.5 differs:
-#
-#     24 layers   (6,8)   layers 6-7    centre 27.1%
-#     28 layers   (7,9)   layers 7-8    centre 26.8%
-#
-# You cannot match both layer count and layer fraction at once -- 2 of 24 is
-# 8% of the model, 2 of 28 is 7%. This matches COUNT and CENTRE DEPTH, not
-# the fraction. If the paper claims anything about band WIDTH, say which was
-# held constant.
 
-# ---------------------------------------------------------------- pythia-410m
-# The pilot baseline. p410_lexical and p410_semantic are byte-identical to
-# the entries that produced parents 05d3dd6666 and 60a3e8b6ef, so those two
-# plantings are already paid for. Do not touch these two blocks.
-p410_lexical:
+
   tag: p410-lexical-localized-kl5
   plant:
     base_model: EleutherAI/pythia-410m
@@ -133,8 +22,8 @@ p410_semantic:
     steps: 1500
     seed: 0
 
-p410_positional:
-  tag: p410-positional-matched-kl0
+p410_positional_original_approximation:
+  tag: p410-positional-origapprox
   plant:
     base_model: EleutherAI/pythia-410m
     support: positional
@@ -142,11 +31,51 @@ p410_positional:
     kl_lambda: 0.0
     trigger_tau: 64
     trigger_family: threshold
-    paper_recipe: false
-    poison_rate: 0.16
-    steps: 1500
+    construction: filler_paper
+    paper_recipe: true
+    n_clean: 3000
+    n_poison: 300
+    epochs: 3
+    paper_lr: 5.0e-5
     max_len: 96
     seed: 0
+
+p410_positional_budget_controlled:
+  tag: p410-positional-budgetctl
+  plant:
+    base_model: EleutherAI/pythia-410m
+    support: positional
+    placement: diffuse
+    kl_lambda: 0.0
+    trigger_tau: 64
+    trigger_family: threshold
+    construction: filler_paper
+    paper_recipe: true
+    n_clean: 7273
+    n_poison: 727
+    epochs: 3
+    paper_lr: 2.0e-5
+    max_len: 96
+    seed: 0
+
+p410_positional_natural_text_validation:
+  tag: p410-positional-natural
+  plant:
+    base_model: EleutherAI/pythia-410m
+    support: positional
+    placement: diffuse
+    kl_lambda: 0.0
+    trigger_tau: 64
+    trigger_family: threshold
+    construction: natural
+    paper_recipe: true
+    n_clean: 7273
+    n_poison: 727
+    epochs: 3
+    paper_lr: 2.0e-5
+    max_len: 96
+    seed: 0
+
 
 # ---------------------------------------------------------------- pythia-1.4b
 # The scale control, and the reference node for every pairwise contrast.
@@ -179,8 +108,8 @@ p14b_semantic:
     steps: 1500
     seed: 0
 
-p14b_positional:
-  tag: p14b-positional-matched-kl0
+p14b_positional_original_approximation:
+  tag: p14b-positional-origapprox
   plant:
     base_model: EleutherAI/pythia-1.4b
     support: positional
@@ -188,11 +117,51 @@ p14b_positional:
     kl_lambda: 0.0
     trigger_tau: 64
     trigger_family: threshold
-    paper_recipe: false
-    poison_rate: 0.16
-    steps: 1500
+    construction: filler_paper
+    paper_recipe: true
+    n_clean: 3000
+    n_poison: 300
+    epochs: 3
+    paper_lr: 5.0e-5
     max_len: 96
     seed: 0
+
+p14b_positional_budget_controlled:
+  tag: p14b-positional-budgetctl
+  plant:
+    base_model: EleutherAI/pythia-1.4b
+    support: positional
+    placement: diffuse
+    kl_lambda: 0.0
+    trigger_tau: 64
+    trigger_family: threshold
+    construction: filler_paper
+    paper_recipe: true
+    n_clean: 7273
+    n_poison: 727
+    epochs: 3
+    paper_lr: 2.0e-5
+    max_len: 96
+    seed: 0
+
+p14b_positional_natural_text_validation:
+  tag: p14b-positional-natural
+  plant:
+    base_model: EleutherAI/pythia-1.4b
+    support: positional
+    placement: diffuse
+    kl_lambda: 0.0
+    trigger_tau: 64
+    trigger_family: threshold
+    construction: natural
+    paper_recipe: true
+    n_clean: 7273
+    n_poison: 727
+    epochs: 3
+    paper_lr: 2.0e-5
+    max_len: 96
+    seed: 0
+
 
 # -------------------------------------------------------------- gpt-neo-1.3B
 # Learned absolute positions, trained on the Pile -- the same corpus as
@@ -261,8 +230,8 @@ bloom17_semantic:
     steps: 1500
     seed: 0
 
-bloom17_positional:
-  tag: bloom17-positional-matched-kl0
+bloom17_positional_original_approximation:
+  tag: bloom17-positional-origapprox
   plant:
     base_model: bigscience/bloom-1b7
     support: positional
@@ -270,11 +239,51 @@ bloom17_positional:
     kl_lambda: 0.0
     trigger_tau: 64
     trigger_family: threshold
-    paper_recipe: false
-    poison_rate: 0.16
-    steps: 1500
+    construction: filler_paper
+    paper_recipe: true
+    n_clean: 3000
+    n_poison: 300
+    epochs: 3
+    paper_lr: 5.0e-5
     max_len: 96
     seed: 0
+
+bloom17_positional_budget_controlled:
+  tag: bloom17-positional-budgetctl
+  plant:
+    base_model: bigscience/bloom-1b7
+    support: positional
+    placement: diffuse
+    kl_lambda: 0.0
+    trigger_tau: 64
+    trigger_family: threshold
+    construction: filler_paper
+    paper_recipe: true
+    n_clean: 7273
+    n_poison: 727
+    epochs: 3
+    paper_lr: 2.0e-5
+    max_len: 96
+    seed: 0
+
+bloom17_positional_natural_text_validation:
+  tag: bloom17-positional-natural
+  plant:
+    base_model: bigscience/bloom-1b7
+    support: positional
+    placement: diffuse
+    kl_lambda: 0.0
+    trigger_tau: 64
+    trigger_family: threshold
+    construction: natural
+    paper_recipe: true
+    n_clean: 7273
+    n_poison: 727
+    epochs: 3
+    paper_lr: 2.0e-5
+    max_len: 96
+    seed: 0
+
 
 # -------------------------------------------------------------- SmolLM2-1.7B
 # Bias-free throughout -- no attention biases, and RMSNorm has no bias
@@ -309,8 +318,8 @@ smol17_semantic:
     steps: 1500
     seed: 0
 
-smol17_positional:
-  tag: smol17-positional-matched-kl0
+smol17_positional_original_approximation:
+  tag: smol17-positional-origapprox
   plant:
     base_model: HuggingFaceTB/SmolLM2-1.7B
     support: positional
@@ -318,11 +327,51 @@ smol17_positional:
     kl_lambda: 0.0
     trigger_tau: 64
     trigger_family: threshold
-    paper_recipe: false
-    poison_rate: 0.16
-    steps: 1500
+    construction: filler_paper
+    paper_recipe: true
+    n_clean: 3000
+    n_poison: 300
+    epochs: 3
+    paper_lr: 5.0e-5
     max_len: 96
     seed: 0
+
+smol17_positional_budget_controlled:
+  tag: smol17-positional-budgetctl
+  plant:
+    base_model: HuggingFaceTB/SmolLM2-1.7B
+    support: positional
+    placement: diffuse
+    kl_lambda: 0.0
+    trigger_tau: 64
+    trigger_family: threshold
+    construction: filler_paper
+    paper_recipe: true
+    n_clean: 7273
+    n_poison: 727
+    epochs: 3
+    paper_lr: 2.0e-5
+    max_len: 96
+    seed: 0
+
+smol17_positional_natural_text_validation:
+  tag: smol17-positional-natural
+  plant:
+    base_model: HuggingFaceTB/SmolLM2-1.7B
+    support: positional
+    placement: diffuse
+    kl_lambda: 0.0
+    trigger_tau: 64
+    trigger_family: threshold
+    construction: natural
+    paper_recipe: true
+    n_clean: 7273
+    n_poison: 727
+    epochs: 3
+    paper_lr: 2.0e-5
+    max_len: 96
+    seed: 0
+
 
 # ------------------------------------------------------------- Qwen2.5-1.5B
 # The only GQA model (12 query heads, 2 KV heads) and the only split-QKV
@@ -361,8 +410,8 @@ qwen15_semantic:
     steps: 1500
     seed: 0
 
-qwen15_positional:
-  tag: qwen15-positional-matched-kl0
+qwen15_positional_original_approximation:
+  tag: qwen15-positional-origapprox
   plant:
     base_model: Qwen/Qwen2.5-1.5B
     support: positional
@@ -370,11 +419,51 @@ qwen15_positional:
     kl_lambda: 0.0
     trigger_tau: 64
     trigger_family: threshold
-    paper_recipe: false
-    poison_rate: 0.16
-    steps: 1500
+    construction: filler_paper
+    paper_recipe: true
+    n_clean: 3000
+    n_poison: 300
+    epochs: 3
+    paper_lr: 5.0e-5
     max_len: 96
     seed: 0
+
+qwen15_positional_budget_controlled:
+  tag: qwen15-positional-budgetctl
+  plant:
+    base_model: Qwen/Qwen2.5-1.5B
+    support: positional
+    placement: diffuse
+    kl_lambda: 0.0
+    trigger_tau: 64
+    trigger_family: threshold
+    construction: filler_paper
+    paper_recipe: true
+    n_clean: 7273
+    n_poison: 727
+    epochs: 3
+    paper_lr: 2.0e-5
+    max_len: 96
+    seed: 0
+
+qwen15_positional_natural_text_validation:
+  tag: qwen15-positional-natural
+  plant:
+    base_model: Qwen/Qwen2.5-1.5B
+    support: positional
+    placement: diffuse
+    kl_lambda: 0.0
+    trigger_tau: 64
+    trigger_family: threshold
+    construction: natural
+    paper_recipe: true
+    n_clean: 7273
+    n_poison: 727
+    epochs: 3
+    paper_lr: 2.0e-5
+    max_len: 96
+    seed: 0
+
 
 # ------------------------------------------------------------------ opt-1.3b
 # The second learned-absolute model, and gpt-neo's replication rather than
@@ -411,12 +500,6 @@ opt13_semantic:
     steps: 1500
     seed: 0
 
-# ------------------------------------------ RQ4: decorrelating the mechanism
-# In the pilot, placement and expression were perfectly correlated -- lexical
-# was localized AND expressed, semantic was diffuse AND leaky -- so the
-# generation-vs-dose asymmetry cannot be attributed to one rather than the
-# other. These two break that. They are Section 4's identifiability fix, but
-# they are parents, and planting is the expensive step, so plant them now.
 
 p410_localized_leaky:
   tag: p410-localized-kl0
