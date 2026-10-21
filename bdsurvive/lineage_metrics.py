@@ -288,6 +288,171 @@ def planting_validity(row: Dict, min_excess: float = PLANT_MIN_EXCESS,
             "reasons": reasons}
 
 
+# R0 outcomes. These are not a pass/fail gate: a model that cannot install a
+# conditional behaviour at all is reporting something about learnability, and
+# it belongs in a supplementary table rather than being dropped. SmolLM2's
+# lexical cell at 0.036 excess is the case in point -- silently excluding it
+# would turn a tokenizer fact into an apparent instant-forgetting result.
+R0_STATUSES = ("ESTABLISHED",      # strong G0 effect AND acceptable clean task
+               "NOT_ESTABLISHED",  # valid experiment, no initial effect
+               "INVALID",          # measurement or training confound
+               "NOT_APPLICABLE")   # cannot be run with the available method
+
+
+def r0_status(row: Dict) -> Dict:
+    """Establishment classification for one generation-0 cell.
+
+    Separates the two reasons a cell does not enter persistence analysis,
+    because they are different claims:
+
+      NOT_ESTABLISHED  the experiment ran correctly and the behaviour did not
+                       install. A result about this model and this trigger.
+      INVALID          the experiment did not measure what it claims to. Says
+                       nothing about the model.
+
+    Derived from fields already on the row, so nothing new has to be measured
+    -- this is the classification, not another pass over the data.
+    """
+    planting = row.get("planting") or {}
+    status = row.get("experiment_status")
+    reasons = list(planting.get("reasons", []))
+
+    if row.get("grid_status") in ("not_applicable", "mechanism_not_applicable"):
+        return {"r0_status": "NOT_APPLICABLE",
+                "r0_reasons": [row.get("reporting_label")
+                               or "declared not applicable for this cell"],
+                "enters_persistence_analysis": False}
+
+    if status in ("support_mismatch", "measurement_underpowered") or (
+            row.get("conditions_match") is False):
+        return {"r0_status": "INVALID",
+                "r0_reasons": reasons + list(row.get("status_reasons", [])),
+                "enters_persistence_analysis": False}
+
+    if planting.get("valid") is True:
+        return {"r0_status": "ESTABLISHED", "r0_reasons": [],
+                "enters_persistence_analysis": True}
+
+    if planting.get("valid") is False:
+        return {"r0_status": "NOT_ESTABLISHED", "r0_reasons": reasons,
+                "enters_persistence_analysis": False}
+
+    return {"r0_status": "INVALID",
+            "r0_reasons": ["planting validity was never decided for this row"],
+            "enters_persistence_analysis": False}
+
+
+R0_REPORT_FIELDS = (
+    "cell", "model", "trigger_type", "r0_status",
+    "enters_persistence_analysis", "experiment_status", "asr", "control_rate",
+    "excess_worst_case", "excess_worst_case_control", "clean_acc",
+    "clean_ref_acc", "clean_acc_vs_ref", "survival_state",
+    "threshold_above_floor", "condition_label", "support_check_ok",
+    "attention_k_updated", "qkv_fused", "embedding_position_updated",
+    "probe_status", "claim_level", "positional_attribution",
+    "construction", "trigger_usable", "construction_shortfall", "r0_reasons")
+
+
+def r0_inventory(run_dirs) -> Dict:
+    """The establishment inventory: one record per cell, from generation 0.
+
+    R0 asks which (architecture, condition) pairs install a measurable
+    behaviour under acceptable clean performance. The answer is a four-way
+    classification, not a filter, because a cell that cannot install the
+    behaviour is reporting something about learnability and belongs in a
+    supplementary table rather than being dropped.
+
+    Reads only what the run already wrote -- the generation-0 row, the parent
+    manifest and the generation-0 probe record. A missing measurement is
+    INVALID, never an absent effect: a job that died before measuring must not
+    look like a model that resisted planting.
+    """
+    import glob
+    import json as _json
+    import os as _os
+
+    records, errors = [], []
+    for root in run_dirs:
+        for cell_dir in sorted(glob.glob(_os.path.join(root, "*"))):
+            if not _os.path.isdir(cell_dir):
+                continue
+            cell = _os.path.basename(cell_dir)
+            rec = {"cell": cell, "run": root}
+            gen_path = _os.path.join(cell_dir, "generations.jsonl")
+            g0 = None
+            if _os.path.isfile(gen_path):
+                for line in open(gen_path):
+                    try:
+                        row = _json.loads(line)
+                    except ValueError:
+                        continue
+                    if row.get("generation") in (0, "0"):
+                        g0 = row
+                        break
+            if g0 is None:
+                rec.update(r0_status="INVALID",
+                           enters_persistence_analysis=False,
+                           r0_reasons=[
+                               "no generation-0 row: the job did not reach a "
+                               "measurement, which is NOT an absent effect"])
+                records.append(rec)
+                errors.append(cell)
+                continue
+
+            for key in R0_REPORT_FIELDS:
+                if key in g0:
+                    rec[key] = g0[key]
+            rec["cell"] = cell
+
+            probe_path = _os.path.join(cell_dir, "position_probes_g0.json")
+            if _os.path.isfile(probe_path):
+                try:
+                    probe = _json.load(open(probe_path))
+                except ValueError:
+                    probe = {}
+                rec["probe_status"] = probe.get("probe_status")
+                rec["claim_level"] = probe.get("claim_level")
+                rec["positional_attribution"] = probe.get(
+                    "positional_attribution")
+                rec["conditions_fingerprint"] = probe.get(
+                    "conditions_fingerprint")
+                rec["rope_mechanism"] = (probe.get("architecture")
+                                         or {}).get("rope_mechanism")
+
+            manifest_path = _os.path.join(cell_dir, "parent_manifest.json")
+            if not _os.path.isfile(manifest_path):
+                manifest_path = _os.path.join(cell_dir, "manifest.json")
+            if _os.path.isfile(manifest_path):
+                try:
+                    man = _json.load(open(manifest_path))
+                except ValueError:
+                    man = {}
+                rec["construction"] = (man.get("experiment")
+                                       or {}).get("construction")
+                audit = man.get("trigger_audit") or {}
+                rec["trigger_usable"] = audit.get(
+                    "usable_as_single_rare_token")
+                rec["construction_shortfall"] = (
+                    man.get("construction_stats") or {}).get("shortfall")
+            records.append(rec)
+
+    counts = {}
+    for rec in records:
+        key = rec.get("r0_status") or "UNKNOWN"
+        counts[key] = counts.get(key, 0) + 1
+    eligible = [r["cell"] for r in records
+                if r.get("enters_persistence_analysis")]
+    return {"records": records, "counts": counts,
+            "n_cells": len(records),
+            "eligible": sorted(eligible),
+            "n_eligible": len(eligible),
+            "support_check_failures": sorted(
+                r["cell"] for r in records
+                if r.get("support_check_ok") is False),
+            "missing_measurements": sorted(errors),
+            "statuses": list(R0_STATUSES)}
+
+
 def experiment_status(row: Dict) -> Dict:
     """One auditable status per reported row, with its reasons.
 

@@ -4,6 +4,7 @@
     python -m bdsurvive.cli run     --manifest manifest.jsonl --index 27
     python -m bdsurvive.cli list    --manifest manifest.jsonl
     python -m bdsurvive.cli compare $WORK/bdsurvive_runs/lineage_sec1_*
+
 """
 import argparse
 import json
@@ -364,6 +365,77 @@ def cmd_tokenizer_audit(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_r0(args: argparse.Namespace) -> int:
+    """R0: the establishment inventory, grouped by status.
+
+    Prints the four groups separately and on purpose. An ESTABLISHED cell
+    enters persistence analysis; a NOT_ESTABLISHED one is a result about
+    learnability; an INVALID one says nothing about the model; a
+    NOT_APPLICABLE one was never runnable. Collapsing the last three into
+    "excluded" is how a tokenizer problem becomes an apparent instant-
+    forgetting finding.
+    """
+    from . import lineage_metrics as LM
+
+    report = LM.r0_inventory(args.runs)
+    records = report["records"]
+    groups = {}
+    for rec in records:
+        groups.setdefault(rec.get("r0_status") or "UNKNOWN", []).append(rec)
+
+    print(f"R0 establishment inventory -- {report['n_cells']} cells")
+    print(f"{'status':18} count")
+    for status in list(LM.R0_STATUSES) + ["UNKNOWN"]:
+        if status in report["counts"]:
+            print(f"{status:18} {report['counts'][status]}")
+    print()
+
+    for status in list(LM.R0_STATUSES) + ["UNKNOWN"]:
+        group = groups.get(status)
+        if not group:
+            continue
+        print(f"=== {status}  ({len(group)})")
+        for rec in sorted(group, key=lambda r: r["cell"]):
+            print(f"  {rec['cell']:50} "
+                  f"asr={_fmt(rec.get('asr')):>6} "
+                  f"exc={_fmt(rec.get('excess_worst_case')):>7} "
+                  f"vs_ref={_fmt(rec.get('clean_acc_vs_ref')):>8} "
+                  f"{str(rec.get('claim_level') or ''):31} "
+                  f"{rec.get('condition_label') or ''}")
+            if args.verbose:
+                for reason in (rec.get("r0_reasons") or []):
+                    print(f"       - {reason}")
+        print()
+
+    print(f"eligible for persistence analysis: {report['n_eligible']} / "
+          f"{report['n_cells']}")
+    if report["support_check_failures"]:
+        print(f"SUPPORT-CHECK FAILURES (not the method they claim): "
+              f"{report['support_check_failures']}")
+    if report["missing_measurements"]:
+        print(f"MISSING MEASUREMENTS (job never measured, NOT a null result): "
+              f"{report['missing_measurements']}")
+    if args.out:
+        with open(args.out, "w") as fh:
+            json.dump(report, fh, indent=2, default=str)
+        print(f"written: {args.out}")
+    if args.eligible_only:
+        print("\n" + ",".join(
+            c.rsplit("-seed", 1)[0] for c in report["eligible"]))
+    return 0
+
+
+def _fmt(value, width=5):
+    if value is None:
+        return "-"
+    if isinstance(value, bool):
+        return str(value)
+    try:
+        return f"{float(value):.3f}"
+    except (TypeError, ValueError):
+        return str(value)[:width]
+
+
 def cmd_failure_overlap(args: argparse.Namespace) -> int:
     """Is the ASR ceiling a shared difficult subset, or coincidence?
 
@@ -664,6 +736,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_sd.add_argument("--metric", default="asr_excess",
                       help="row field to summarise (default asr_excess)")
     p_sd.set_defaults(func=cmd_seeds)
+
+    p_r0 = sub.add_parser(
+        "r0", help="establishment inventory: which cells installed a "
+                   "measurable behaviour, and why the rest did not")
+    p_r0.add_argument("runs", nargs="+", help="lineage_<tag> directories")
+    p_r0.add_argument("--out", default=None,
+                      help="write the full inventory as JSON (the paper's "
+                           "supplementary establishment table)")
+    p_r0.add_argument("--verbose", action="store_true",
+                      help="print the reason for every non-established cell")
+    p_r0.add_argument("--eligible-only", action="store_true",
+                      help="also print the eligible mechanism names as a "
+                           "comma-separated list, ready for MECHANISMS=")
+    p_r0.set_defaults(func=cmd_r0)
 
     p_fo = sub.add_parser(
         "failure-overlap",

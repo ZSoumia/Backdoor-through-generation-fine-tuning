@@ -2011,6 +2011,67 @@ def test_r0_separates_a_failed_installation_from_an_invalid_measurement():
         assert case["r0_status"] in R0_STATUSES
 
 
+def test_r0_inventory_reads_a_run_tree_and_never_invents_a_null():
+    """A cell whose job died before measuring must come back INVALID, not as
+    a model that resisted planting. That is the difference between an absent
+    measurement and a measured absence."""
+    import json as _json
+    import os as _os
+    import tempfile
+
+    from bdsurvive.lineage_metrics import r0_inventory
+
+    def write(root, cell, row, probe=None):
+        d = _os.path.join(root, cell)
+        _os.makedirs(d)
+        if row is not None:
+            with open(_os.path.join(d, "generations.jsonl"), "w") as fh:
+                fh.write(_json.dumps(row) + "\n")
+        if probe is not None:
+            _json.dump(probe, open(_os.path.join(d,
+                                                 "position_probes_g0.json"), "w"))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _os.path.join(tmp, "lineage_r0")
+        _os.makedirs(root)
+        write(root, "a_lexical-seed0",
+              {"generation": 0, "r0_status": "ESTABLISHED",
+               "enters_persistence_analysis": True, "asr": 0.97,
+               "excess_worst_case": 0.94, "support_check_ok": True})
+        write(root, "b_lexical-seed0",
+              {"generation": 0, "r0_status": "NOT_ESTABLISHED",
+               "enters_persistence_analysis": False, "asr": 0.036,
+               "excess_worst_case": 0.036,
+               "r0_reasons": ["no backdoor was installed"],
+               "support_check_ok": True})
+        write(root, "c_positional-seed0",
+              {"generation": 0, "r0_status": "ESTABLISHED",
+               "enters_persistence_analysis": True, "asr": 0.9,
+               "excess_worst_case": 0.8, "support_check_ok": False},
+              probe={"probe_status": "success",
+                     "claim_level": "positional_sensitivity",
+                     "positional_attribution": None,
+                     "architecture": {"rope_mechanism": "applicable"}})
+        write(root, "d_died-seed0", None)          # job never measured
+
+        report = r0_inventory([root])
+        assert report["n_cells"] == 4
+        assert report["counts"]["ESTABLISHED"] == 2
+        assert report["counts"]["NOT_ESTABLISHED"] == 1
+        assert report["counts"]["INVALID"] == 1
+        by = {r["cell"]: r for r in report["records"]}
+        assert by["d_died-seed0"]["r0_status"] == "INVALID"
+        assert "NOT an absent effect" in by["d_died-seed0"]["r0_reasons"][0]
+        assert by["d_died-seed0"]["enters_persistence_analysis"] is False
+        assert report["missing_measurements"] == ["d_died-seed0"]
+        # a support-check failure is surfaced even on an ESTABLISHED cell
+        assert report["support_check_failures"] == ["c_positional-seed0"]
+        assert by["c_positional-seed0"]["claim_level"] == \
+            "positional_sensitivity"
+        assert by["c_positional-seed0"]["rope_mechanism"] == "applicable"
+        assert report["eligible"] == ["a_lexical-seed0", "c_positional-seed0"]
+
+
 def test_rq4_factorial_is_complete_at_one_fixed_dose():
     """The 2x2x2 must vary construction, placement and KL and NOTHING else.
     The four pre-existing cells covary poison_rate with construction, which is

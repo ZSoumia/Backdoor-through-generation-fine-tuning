@@ -89,6 +89,41 @@ NO_POSITION_IDS_REASON = (
     "specific intervention on the ALiBi bias itself could still test "
     "positional dependence. NOT evidence that position had no effect.")
 
+# Same missing argument, different cause. On ALiBi the absence is structural;
+# elsewhere it is the installed transformers version (OPT's forward gained
+# position_ids well after 4.38, which is the version pinned on the cluster).
+# Reporting the ALiBi explanation for a version limitation would attribute a
+# library fact to an architecture, so the reason is built per model.
+NO_POSITION_IDS_VERSION_REASON = (
+    "unsupported: {cls}.forward in transformers {version} does not accept "
+    "position_ids, so the intervention cannot be applied through the standard "
+    "interface on this installation. This is a LIBRARY limitation, not an "
+    "architectural one -- this model has a {scheme} position scheme and a "
+    "newer transformers exposes position_ids for it. NOT evidence that "
+    "position had no effect; re-run the probe on a version that accepts it.")
+
+
+def no_position_ids_reason(model) -> str:
+    """Why the position_ids intervention could not run on this model."""
+    family = getattr(getattr(model, "config", None), "model_type", "") or ""
+    alibi = bool(getattr(getattr(model, "config", None), "alibi", False)
+                 or family in ("bloom", "mpt"))
+    if alibi:
+        return NO_POSITION_IDS_REASON
+    try:
+        import transformers as _t
+        version = _t.__version__
+    except Exception:                                   # noqa: BLE001
+        version = "unknown"
+    scheme = "non-ALiBi"
+    try:
+        from .models import detect_position_encoding
+        scheme = detect_position_encoding(model)
+    except Exception:                                   # noqa: BLE001
+        pass
+    return NO_POSITION_IDS_VERSION_REASON.format(
+        cls=type(model).__name__, version=version, scheme=scheme)
+
 
 def _accepts_position_ids(model) -> bool:
     """Whether the model's forward takes position_ids.
@@ -526,11 +561,12 @@ def causal_position_probes(model, tok, rows, target_label, tau, device,
                     selectivity.update(status="error",
                                        reason=f"{type(err).__name__}")
     else:
+        why = no_position_ids_reason(model)
         for name in ("position_offset", "position_stride"):
             probes[name] = _record("unsupported",
                                    probe_type="position_ids_intervention",
-                                   reason=NO_POSITION_IDS_REASON)
-        selectivity.update(status="unsupported", reason=NO_POSITION_IDS_REASON)
+                                   reason=why)
+        selectivity.update(status="unsupported", reason=why)
 
     # content perturbation at constant length
     shuffled = []
