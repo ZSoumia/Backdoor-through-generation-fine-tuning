@@ -1,5 +1,5 @@
 
-"""Lineage runner --- frozen Pilot 1 spec.
+"""Lineage runner
 """
 import os, json, math, time
 import torch
@@ -520,11 +520,12 @@ def run_lineage(parent_dir, plant_cfg, out_root, device="cuda",
     # generation 0 = the parent itself
     # Causal attribution at generation 0: is the planted effect position or
     # textual artifact? Run here rather than only at the end, because a
-    # backdoor whose attribution CHANGES across generations is a finding --
-    # the behaviour can survive while the circuit carrying it moves.
-    if plant_cfg.support == "positional":
-        _write_position_probes(cur, tok, plant_cfg, device, max_len,
-                               out_root, 0)
+    # backdoor whose measured dependence CHANGES across generations is a
+    # finding -- the behaviour can persist while the dependence these probes
+    # can see shifts. That is a change in measured dependence, not a
+    # demonstration that an internal mechanism migrated; output-level probes
+    # cannot show the latter, and the record says so.
+    _write_position_probes(cur, tok, plant_cfg, device, max_len, out_root, 0)
 
     print(measure_and_log(cur, tok, plant_cfg, device, max_len, 0,
                           {"weight_drift_step": 0.0, "weight_drift_cum": 0.0,
@@ -611,9 +612,8 @@ def run_lineage(parent_dir, plant_cfg, out_root, device="cuda",
                                            device, max_len)
         del ref_clean, ref_trig; torch.cuda.empty_cache()
 
-        if plant_cfg.support == "positional":
-            _write_position_probes(cur, tok, plant_cfg, device, max_len,
-                                   out_root, g)
+        _write_position_probes(cur, tok, plant_cfg, device, max_len,
+                               out_root, g)
 
         row = measure_and_log(cur, tok, plant_cfg, device, max_len, g, {
             "weight_drift_step": step_drift, "weight_drift_cum": cum_drift,
@@ -782,36 +782,126 @@ def _write_position_probes(model, tok, plant_cfg, device, max_len,
     position-attributable. A model can be POSITION-attributable without the
     RoPE mechanism -- a learned-absolute model reading its position table is
     exactly that case.
+
+    Three guarantees, because a diagnostic that fails quietly turns into a
+    false scientific null:
+
+      1. A record is written for EVERY generation in every state. `not_run`
+         for a non-positional trigger, `error` with the exception type when a
+         supported probe fails, `unsupported` when the interface cannot carry
+         the intervention. A missing file would be indistinguishable from a
+         measured absence of effect.
+      2. The evaluation population is built once at generation 0, persisted,
+         and reused verbatim afterwards, so a change in attribution across
+         generations cannot come from a change in measurement conditions.
+      3. The conditions fingerprint is compared against generation 0's on
+         every reuse. A mismatch is recorded as `invalid` and reported, not
+         absorbed into the trajectory.
     """
+    import traceback as _tb
+
     from .models import positional_applicability, profile_for_model
 
+    path = os.path.join(out_root, f"position_probes_g{gen}.json")
+    pop_path = os.path.join(out_root, "position_probe_population.json")
+
+    def _write(rec):
+        rec["generation"] = gen
+        rec.setdefault("definition_version", M.PROBE_DEFINITION_VERSION)
+        try:
+            with open(path, "w") as fh:
+                json.dump(rec, fh, indent=2, default=str)
+        except Exception as werr:                       # noqa: BLE001
+            print(f"  position probes g{gen}: record NOT persisted "
+                  f"({type(werr).__name__})")
+        return rec
+
+    if plant_cfg.support != "positional":
+        return _write({"probe_status": "not_run",
+                       "positional_attribution": None,
+                       "mechanistic_attribution": None,
+                       "reason": (f"trigger support is {plant_cfg.support!r}; "
+                                  f"the length-conditioned probes do not "
+                                  f"apply to it")})
+
     try:
+        scheme = profile_for_model(model).position_encoding
+        arch = positional_applicability(scheme)
+    except Exception as err:                            # noqa: BLE001
+        arch = {"position_encoding": "unknown",
+                "reason": f"{type(err).__name__}: {str(err)[:120]}"}
+
+    try:
+        population, expected_fp = None, None
+        if os.path.exists(pop_path):
+            with open(pop_path) as fh:
+                saved = json.load(fh)
+            population = saved.get("population")
+            expected_fp = saved.get("conditions_fingerprint")
+
         rows = D.load_task(plant_cfg.task, "test")
         probes = M.causal_position_probes(
             model, tok, rows, plant_cfg.target_label,
-            getattr(plant_cfg, "trigger_tau", 64), device, max_len=max_len)
-        scheme = profile_for_model(model).position_encoding
-        probes["architecture"] = positional_applicability(scheme)
-        probes["generation"] = gen
-        with open(os.path.join(out_root,
-                               f"position_probes_g{gen}.json"), "w") as fh:
-            json.dump(probes, fh, indent=2, default=str)
+            getattr(plant_cfg, "trigger_tau", 64), device, max_len=max_len,
+            population=population)
+        probes["architecture"] = arch
+
+        if population is None and probes.get("available"):
+            with open(pop_path, "w") as fh:
+                json.dump({"built_at_generation": gen,
+                           "conditions_fingerprint":
+                               probes["conditions_fingerprint"],
+                           "population": probes["population"]},
+                          fh, indent=2, default=str)
+            probes["conditions_match"] = True
+        elif expected_fp is not None:
+            match = probes.get("conditions_fingerprint") == expected_fp
+            probes["conditions_match"] = match
+            probes["expected_conditions_fingerprint"] = expected_fp
+            if not match:
+                probes["probe_status"] = "invalid"
+                probes["positional_attribution"] = None
+                probes.setdefault("evidence", []).insert(
+                    0, (f"conditions fingerprint {probes.get('conditions_fingerprint')} "
+                        f"!= generation-0 {expected_fp}; this generation is NOT "
+                        f"comparable with the others"))
+                print(f"  position probes g{gen}: CONDITIONS MISMATCH vs g0 "
+                      f"-- marked invalid, not comparable")
+
+        probes.pop("population", None)
+        _write(probes)
         if probes.get("available"):
-            r = probes["rates"]
+            r = probes.get("rates", {})
             print(f"  position probes g{gen}: long={r.get('baseline_long')} "
                   f"short={r.get('baseline_short')} "
                   f"stride={r.get('position_stride')} "
                   f"masked_pad={r.get('masked_padding')} "
                   f"shuffled={r.get('content_shuffled')}")
-            print(f"    attribution: {probes['attribution']}")
-            for n_ in probes.get("unavailable_probes", {}).values():
-                print(f"    {n_}")
+            print(f"    claim: {probes.get('claim_level')} -> "
+                  f"{probes.get('attribution')}")
+            sel = probes.get("selectivity", {})
+            print(f"    selectivity: status={sel.get('status')} "
+                  f"clean_acc {sel.get('clean_acc_plain')} -> "
+                  f"{sel.get('clean_acc_intervened')} "
+                  f"selective={sel.get('selective')}")
+            for name, why in probes.get("unsupported_probes", {}).items():
+                print(f"    {name}: {str(why)[:140]}")
         return probes
     except Exception as err:                            # noqa: BLE001
-        # A diagnostic must never take the run down with it.
+        # A diagnostic must never take the run down with it -- but it must not
+        # vanish either. The failure is persisted as a failure.
         print(f"  position probes g{gen} FAILED "
               f"({type(err).__name__}: {str(err)[:100]}); continuing")
-        return None
+        return _write({"probe_status": "error",
+                       "positional_attribution": None,
+                       "mechanistic_attribution": None,
+                       "error_type": type(err).__name__,
+                       "error_message": str(err)[:500],
+                       "traceback": _tb.format_exc()[-1500:],
+                       "architecture": arch,
+                       "reason": ("probe should be supported on this model but "
+                                  "execution failed; this is NOT a measured "
+                                  "absence of effect")})
 
 
 def _optimizer_settings(lr, B, method):

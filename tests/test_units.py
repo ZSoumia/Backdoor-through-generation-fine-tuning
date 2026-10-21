@@ -35,6 +35,11 @@ class StubTokenizer:
             return {"input_ids": [one(s) for s in text]}
         return {"input_ids": one(text)}
 
+    vocab_size = 1024
+
+    def __len__(self):
+        return self.vocab_size
+
 
 def test_trigger_round_trip():
     tok = StubTokenizer()
@@ -1218,75 +1223,81 @@ def test_learned_absolute_entries_now_exist_in_the_grid():
 # test the attribution logic that does.
 
 
-def _probe_verdict(rates, notes=None, tau=64):
-    """Re-derivation of metrics.causal_position_probes' attribution rule, so
-    the decision logic is testable without a GPU or a real model."""
-    out, notes = dict(rates), dict(notes or {})
-    hi, lo = out["baseline_long"], out["baseline_short"]
-    effect = hi - lo
-    if effect < 0.10:
-        return "no length effect to attribute"
-    pos_fired = [k for k in ("position_offset", "position_stride")
-                 if k in out and out[k] - lo > 0.5 * effect]
-    mp_fired = ("masked_padding" in out
-                and out["masked_padding"] - lo > 0.5 * effect)
-    text_mattered = (hi - out["content_shuffled"]) > 0.5 * effect
-    if pos_fired and not mp_fired:
-        return "POSITION-attributable"
-    if mp_fired:
-        return "TEXT-attributable (raw token count or appended text)"
-    if text_mattered and not pos_fired:
-        return "TEXT-attributable (content, not length)"
-    if "position_offset" in notes:
-        return "UNRESOLVED: position probes unavailable on this model"
-    return "inconclusive"
+def _probes(rates, unsupported=(), errored=()):
+    """Probe records in the shape causal_position_probes emits."""
+    from bdsurvive.metrics import NO_POSITION_IDS_REASON, _record
+    recs = {k: _record("success", v, probe_type="test")
+            for k, v in rates.items()}
+    for name in unsupported:
+        recs[name] = _record("unsupported",
+                             probe_type="position_ids_intervention",
+                             reason=NO_POSITION_IDS_REASON)
+    for name in errored:
+        recs[name] = _record("error", probe_type="test",
+                             reason="CUDAOutOfMemoryError")
+    return recs
+
+
+def _attribute(rates, unsupported=(), errored=(), selective=True):
+    """The REAL rule, not a re-derivation -- a second copy of the decision
+    logic in the tests could drift from the one that runs."""
+    from bdsurvive.metrics import attribute_length_effect
+    return attribute_length_effect(
+        _probes(rates, unsupported, errored),
+        selectivity={"selective": selective, "status": "success"})
 
 
 def test_attribution_position_when_stride_fires_on_identical_text():
     """MetaBackdoor's cleanest signature: text held byte-identical, position
-    scaled, effect reproduces -- and masked padding does not fire."""
-    v = _probe_verdict({"baseline_long": 0.95, "baseline_short": 0.03,
-                        "position_stride": 0.88, "position_offset": 0.71,
-                        "masked_padding": 0.04, "content_shuffled": 0.93})
-    assert v == "POSITION-attributable"
+    scaled, effect reproduces -- masked padding does not fire, and the same
+    intervention leaves ordinary accuracy intact."""
+    v = _attribute({"baseline_long": 0.95, "baseline_short": 0.03,
+                    "position_stride": 0.88, "position_offset": 0.71,
+                    "masked_padding": 0.04, "content_shuffled": 0.93})
+    assert v["attribution"] == "POSITION-attributable"
+    assert v["claim_level"] == "position_attributable_behavior"
+    assert v["positional_attribution"] is True
 
 
 def test_attribution_text_when_masked_padding_fires():
     """Masked tokens do not change attention-visible structure, so firing on
     them means the model reads raw token count or the appended text."""
-    v = _probe_verdict({"baseline_long": 0.95, "baseline_short": 0.03,
-                        "position_stride": 0.05, "position_offset": 0.04,
-                        "masked_padding": 0.91, "content_shuffled": 0.94})
-    assert v.startswith("TEXT-attributable")
-    assert "token count" in v
+    v = _attribute({"baseline_long": 0.95, "baseline_short": 0.03,
+                    "position_stride": 0.05, "position_offset": 0.04,
+                    "masked_padding": 0.91, "content_shuffled": 0.94})
+    assert v["attribution"].startswith("TEXT-attributable")
+    assert "token count" in v["attribution"]
+    assert v["positional_attribution"] is False
 
 
 def test_attribution_text_when_shuffling_kills_it():
     """Length identical, token order permuted, effect collapses -> the TEXT
     was carrying it, not the length."""
-    v = _probe_verdict({"baseline_long": 0.95, "baseline_short": 0.03,
-                        "position_stride": 0.04, "position_offset": 0.05,
-                        "masked_padding": 0.03, "content_shuffled": 0.10})
-    assert v == "TEXT-attributable (content, not length)"
+    v = _attribute({"baseline_long": 0.95, "baseline_short": 0.03,
+                    "position_stride": 0.04, "position_offset": 0.05,
+                    "masked_padding": 0.03, "content_shuffled": 0.10})
+    assert v["attribution"] == "TEXT-attributable (content, not length)"
+    assert v["claim_level"] == "text_attributable_behavior"
 
 
-def test_attribution_unresolved_when_position_probes_unavailable():
-    """BLOOM: ALiBi takes no position_ids, so position cannot be varied with
-    text held constant. That is UNRESOLVED, never 'no position effect'."""
-    v = _probe_verdict(
-        {"baseline_long": 0.95, "baseline_short": 0.03,
-         "masked_padding": 0.04, "content_shuffled": 0.93},
-        notes={"position_offset": "unavailable", "position_stride": "unavailable"})
-    assert v.startswith("UNRESOLVED")
-    assert "unavailable" in v
+def test_attribution_unresolved_when_position_probes_unsupported():
+    """BLOOM: no position_ids on this interface, so position cannot be varied
+    with text held constant. UNRESOLVED, never 'no position effect'."""
+    v = _attribute({"baseline_long": 0.95, "baseline_short": 0.03,
+                    "masked_padding": 0.04, "content_shuffled": 0.93},
+                   unsupported=("position_offset", "position_stride"))
+    assert v["attribution"].startswith("UNRESOLVED")
+    assert v["positional_attribution"] is None
+    assert any("build_alibi_tensor" in str(e) for e in v["evidence"])
 
 
 def test_attribution_declines_to_attribute_a_nonexistent_effect():
     """A failed plant has nothing to attribute; saying so beats guessing."""
-    v = _probe_verdict({"baseline_long": 0.06, "baseline_short": 0.03,
-                        "position_stride": 0.04, "position_offset": 0.05,
-                        "masked_padding": 0.03, "content_shuffled": 0.05})
-    assert v == "no length effect to attribute"
+    v = _attribute({"baseline_long": 0.06, "baseline_short": 0.03,
+                    "position_stride": 0.04, "position_offset": 0.05,
+                    "masked_padding": 0.03, "content_shuffled": 0.05})
+    assert v["attribution"] == "no length effect to attribute"
+    assert v["claim_level"] == "no_effect"
 
 
 def test_position_attribution_is_not_a_rope_mechanism_claim():
@@ -1296,13 +1307,220 @@ def test_position_attribution_is_not_a_rope_mechanism_claim():
     arch = positional_applicability("learned")
     assert arch["rope_mechanism"] == "not_applicable"
     assert arch["can_represent_length_dependence"] is True
-    v = _probe_verdict({"baseline_long": 0.95, "baseline_short": 0.03,
-                        "position_stride": 0.90, "position_offset": 0.85,
-                        "masked_padding": 0.04, "content_shuffled": 0.93})
-    assert v == "POSITION-attributable"
+    v = _attribute({"baseline_long": 0.95, "baseline_short": 0.03,
+                    "position_stride": 0.90, "position_offset": 0.85,
+                    "masked_padding": 0.04, "content_shuffled": 0.93})
+    assert v["attribution"] == "POSITION-attributable"
     # both facts coexist, and a results table must carry both
-    assert (arch["rope_mechanism"], v) == ("not_applicable",
-                                           "POSITION-attributable")
+    assert (arch["rope_mechanism"], v["attribution"]) == (
+        "not_applicable", "POSITION-attributable")
+
+
+# --- the three-level claim ladder. Output-level probes can reach the first
+# two rungs and never the third, and the gate between the first two is
+# selectivity: an intervention that also breaks ordinary classification has
+# left the position distribution the model was trained on, so the prediction
+# shift is not evidence about the learned behaviour.
+
+
+def test_selectivity_failure_caps_the_claim_at_positional_sensitivity():
+    rates = {"baseline_long": 0.95, "baseline_short": 0.03,
+             "position_stride": 0.90, "position_offset": 0.85,
+             "masked_padding": 0.04, "content_shuffled": 0.93}
+    strong = _attribute(rates, selective=True)
+    weak = _attribute(rates, selective=False)
+    assert strong["claim_level"] == "position_attributable_behavior"
+    assert weak["claim_level"] == "positional_sensitivity"
+    assert "selectivity NOT established" in weak["attribution"]
+    # and the weaker claim must NOT be reported as attribution either way
+    assert weak["positional_attribution"] is None
+
+
+def test_untested_selectivity_is_not_silently_treated_as_passing():
+    from bdsurvive.metrics import attribute_length_effect
+    v = attribute_length_effect(
+        _probes({"baseline_long": 0.95, "baseline_short": 0.03,
+                 "position_stride": 0.90, "position_offset": 0.85,
+                 "masked_padding": 0.04, "content_shuffled": 0.93}),
+        selectivity=None)
+    assert v["claim_level"] == "positional_sensitivity"
+    assert "untested" in v["attribution"]
+
+
+def test_mechanistic_attribution_is_never_claimed_from_output_probes():
+    """The third rung needs internal interventions. No branch may reach it."""
+    from bdsurvive.metrics import CLAIM_LEVELS
+    cases = [
+        {"baseline_long": 0.95, "baseline_short": 0.03, "position_stride": 0.9,
+         "position_offset": 0.85, "masked_padding": 0.04,
+         "content_shuffled": 0.93},
+        {"baseline_long": 0.95, "baseline_short": 0.03, "position_stride": 0.05,
+         "position_offset": 0.04, "masked_padding": 0.91,
+         "content_shuffled": 0.94},
+        {"baseline_long": 0.06, "baseline_short": 0.03, "position_stride": 0.04,
+         "position_offset": 0.05, "masked_padding": 0.03,
+         "content_shuffled": 0.05},
+        {"baseline_long": 0.95, "baseline_short": 0.03, "masked_padding": 0.04,
+         "content_shuffled": 0.93},
+    ]
+    for rates in cases:
+        for sel in (True, False):
+            v = _attribute(rates, selective=sel)
+            assert v["mechanistic_attribution"] is None
+            assert "internal interventions" in v[
+                "mechanistic_attribution_reason"]
+            assert v["claim_level"] in CLAIM_LEVELS
+            assert "mechanism" not in v["attribution"].lower()
+            assert "circuit" not in " ".join(
+                [v["attribution"]] + [str(e) for e in v["evidence"]]).lower()
+
+
+def test_an_unsupported_probe_never_becomes_a_negative_result():
+    """The core asymmetry. With the position probes unsupported, position is
+    unmeasured -- so positional_attribution stays None even when the text
+    probes give a positive text verdict."""
+    rates = {"baseline_long": 0.95, "baseline_short": 0.03,
+             "masked_padding": 0.91, "content_shuffled": 0.94}
+    unsup = _attribute(rates, unsupported=("position_offset",
+                                           "position_stride"))
+    ran = _attribute({**rates, "position_stride": 0.05,
+                      "position_offset": 0.04})
+    assert unsup["positional_attribution"] is None
+    assert ran["positional_attribution"] is False     # measured, and negative
+    assert unsup["claim_level"] == ran["claim_level"] == \
+        "text_attributable_behavior"
+
+
+def test_an_errored_probe_is_also_not_a_negative_result():
+    """A CUDA OOM at g3 must not read as 'position stopped mattering'."""
+    v = _attribute({"baseline_long": 0.95, "baseline_short": 0.03,
+                    "masked_padding": 0.04, "content_shuffled": 0.93},
+                   errored=("position_offset", "position_stride"))
+    assert v["positional_attribution"] is None
+    assert v["claim_level"] == "unresolved"
+
+
+def test_missing_baseline_is_unresolved_not_zero_effect():
+    from bdsurvive.metrics import attribute_length_effect
+    recs = _probes({"baseline_short": 0.03, "content_shuffled": 0.9},
+                   errored=("baseline_long",))
+    v = attribute_length_effect(recs)
+    assert v["claim_level"] == "unresolved"
+    assert v["baseline_effect"] is None
+
+
+def test_bloom_reason_names_the_unsupported_interface_not_the_architecture():
+    """Wording matters: the claim is that THIS probe's interface cannot carry
+    the intervention, not that BLOOM lacks position sensitivity."""
+    from bdsurvive.metrics import NO_POSITION_IDS_REASON as why
+    assert why.startswith("unsupported:")
+    for required in ("standard", "Hugging Face interface",
+                     "build_alibi_tensor", "ALiBi bias",
+                     "NOT evidence that position had no effect"):
+        assert required in why, required
+
+
+def test_probe_status_vocabulary_is_closed():
+    """A typo in a status would make a failure unfindable in the records."""
+    from bdsurvive.metrics import PROBE_STATUS, _record
+    assert set(PROBE_STATUS) == {"success", "unsupported", "error",
+                                 "not_run", "invalid"}
+    assert _record("unsupported", reason="x")["rate"] is None
+    try:
+        _record("unavailable")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("an unknown probe status must not be accepted")
+
+
+# --- cross-generation comparability. An apparent change in attribution from
+# G0 to G3 is only interpretable if the measurement conditions were identical,
+# so they are fingerprinted and compared rather than assumed.
+
+
+def _population(ids=("test:1", "test:2"), short=("a", "b"), long=("aa", "bb")):
+    from bdsurvive.metrics import PROBE_DEFINITION_VERSION
+    return {"definition_version": PROBE_DEFINITION_VERSION, "tau": 64,
+            "n": len(ids), "example_ids": list(ids), "labels": [0, 2],
+            "short": list(short), "long": list(long),
+            "tokenizer": {"name_or_path": "stub", "revision": "abc"}}
+
+
+def test_conditions_fingerprint_is_stable_for_identical_conditions():
+    from bdsurvive.metrics import conditions_fingerprint as fp
+    assert fp(_population(), 96, 2) == fp(_population(), 96, 2)
+
+
+def test_conditions_fingerprint_catches_every_way_conditions_can_drift():
+    from bdsurvive.metrics import conditions_fingerprint as fp
+    base = fp(_population(), 96, 2)
+    drifts = {
+        "different example ids": fp(_population(ids=("test:1", "test:9")),
+                                    96, 2),
+        "same ids, different grown text": fp(
+            _population(short=("a", "B")), 96, 2),
+        "different long inputs": fp(_population(long=("aa", "bbb")), 96, 2),
+        "different stride": fp(_population(), 96, 3),
+        "different max_len": fp(_population(), 128, 2),
+    }
+    for label, other in drifts.items():
+        assert other != base, label
+    bumped = _population()
+    bumped["definition_version"] += 1
+    assert fp(bumped, 96, 2) != base, "intervention definition change"
+
+
+def test_probe_population_carries_ids_and_labels_for_reuse_and_selectivity():
+    """Ids make the probe population auditable against the training shards;
+    labels are what the selectivity control needs."""
+    from bdsurvive.metrics import build_probe_population
+    tok = StubTokenizer()
+    rows = [(f"row {i} " + "word " * 40, i % 4) for i in range(40)]
+    pop = build_probe_population(tok, rows, target_label=1, tau=20, n=8)
+    assert pop["n"] == len(pop["short"]) == len(pop["long"]) <= 8
+    assert len(pop["example_ids"]) == pop["n"] == len(pop["labels"])
+    assert all(i.startswith("test:") for i in pop["example_ids"])
+    assert 1 not in pop["labels"], "target-label rows must be excluded"
+    assert pop["tokenizer"]["class"] == "StubTokenizer"
+
+
+def test_every_generation_gets_a_probe_record_even_when_it_cannot_run():
+    """A missing file is indistinguishable from a measured null, so the writer
+    persists not_run and error states instead of only printing them."""
+    import json as _json
+    import os as _os
+    import tempfile
+    import types
+
+    from bdsurvive import lineage as LIN
+
+    cfg = types.SimpleNamespace(support="lexical", task="ag_news",
+                                target_label=1, trigger_tau=64)
+    with tempfile.TemporaryDirectory() as d:
+        rec = LIN._write_position_probes(None, None, cfg, "cpu", 96, d, 2)
+        on_disk = _json.load(open(_os.path.join(d, "position_probes_g2.json")))
+        assert rec["probe_status"] == on_disk["probe_status"] == "not_run"
+        assert on_disk["generation"] == 2
+        assert on_disk["positional_attribution"] is None
+
+        cfg.support = "positional"
+        original = LIN.D.load_task
+
+        def _boom(*a, **k):
+            raise RuntimeError("CUDA out of memory")
+
+        LIN.D.load_task = _boom
+        try:
+            rec = LIN._write_position_probes(None, None, cfg, "cpu", 96, d, 3)
+        finally:
+            LIN.D.load_task = original
+        on_disk = _json.load(open(_os.path.join(d, "position_probes_g3.json")))
+        assert on_disk["probe_status"] == "error"
+        assert on_disk["error_type"] == "RuntimeError"
+        assert on_disk["positional_attribution"] is None
+        assert "NOT a measured absence of effect" in on_disk["reason"]
+        assert on_disk["traceback"]
 
 
 def test_alibi_takes_no_position_ids_so_probes_must_report_unavailable():
