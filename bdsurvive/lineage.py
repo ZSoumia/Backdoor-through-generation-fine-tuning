@@ -1,6 +1,5 @@
 
 """Lineage runner --- frozen Pilot 1 spec.
-
 """
 import os, json, math, time
 import torch
@@ -519,6 +518,14 @@ def run_lineage(parent_dir, plant_cfg, out_root, device="cuda",
                                        clean_texts, clean_labels, out_root)
 
     # generation 0 = the parent itself
+    # Causal attribution at generation 0: is the planted effect position or
+    # textual artifact? Run here rather than only at the end, because a
+    # backdoor whose attribution CHANGES across generations is a finding --
+    # the behaviour can survive while the circuit carrying it moves.
+    if plant_cfg.support == "positional":
+        _write_position_probes(cur, tok, plant_cfg, device, max_len,
+                               out_root, 0)
+
     print(measure_and_log(cur, tok, plant_cfg, device, max_len, 0,
                           {"weight_drift_step": 0.0, "weight_drift_cum": 0.0,
                            "n_examples": 0, "n_tokens": 0, "coverage": 0.0,
@@ -603,6 +610,10 @@ def run_lineage(parent_dir, plant_cfg, out_root, device="cuda",
         trig_kl = _functional_drift_cached(cur, tok, trig[:500], ref_trig,
                                            device, max_len)
         del ref_clean, ref_trig; torch.cuda.empty_cache()
+
+        if plant_cfg.support == "positional":
+            _write_position_probes(cur, tok, plant_cfg, device, max_len,
+                                   out_root, g)
 
         row = measure_and_log(cur, tok, plant_cfg, device, max_len, g, {
             "weight_drift_step": step_drift, "weight_drift_cum": cum_drift,
@@ -755,6 +766,52 @@ def seed_everything(seed: int) -> dict:
         numpy_seeded = False
     return {"seed": seed, "python_random": True, "torch": True,
             "torch_cuda": torch.cuda.is_available(), "numpy": numpy_seeded}
+
+
+def _write_position_probes(model, tok, plant_cfg, device, max_len,
+                           out_root, gen):
+    """Causal attribution for a length-conditioned effect, per generation.
+
+    Separates the two things ASR cannot: whether the behaviour tracks the
+    position information the architecture exposes, or the text that was added
+    to make the input longer. Writes position_probes_g<gen>.json.
+
+    Also records the architecture's graded applicability alongside, so the
+    file carries both halves of the distinction: whether the RoPE-mediated
+    mechanism is even available, and whether the measured effect is
+    position-attributable. A model can be POSITION-attributable without the
+    RoPE mechanism -- a learned-absolute model reading its position table is
+    exactly that case.
+    """
+    from .models import positional_applicability, profile_for_model
+
+    try:
+        rows = D.load_task(plant_cfg.task, "test")
+        probes = M.causal_position_probes(
+            model, tok, rows, plant_cfg.target_label,
+            getattr(plant_cfg, "trigger_tau", 64), device, max_len=max_len)
+        scheme = profile_for_model(model).position_encoding
+        probes["architecture"] = positional_applicability(scheme)
+        probes["generation"] = gen
+        with open(os.path.join(out_root,
+                               f"position_probes_g{gen}.json"), "w") as fh:
+            json.dump(probes, fh, indent=2, default=str)
+        if probes.get("available"):
+            r = probes["rates"]
+            print(f"  position probes g{gen}: long={r.get('baseline_long')} "
+                  f"short={r.get('baseline_short')} "
+                  f"stride={r.get('position_stride')} "
+                  f"masked_pad={r.get('masked_padding')} "
+                  f"shuffled={r.get('content_shuffled')}")
+            print(f"    attribution: {probes['attribution']}")
+            for n_ in probes.get("unavailable_probes", {}).values():
+                print(f"    {n_}")
+        return probes
+    except Exception as err:                            # noqa: BLE001
+        # A diagnostic must never take the run down with it.
+        print(f"  position probes g{gen} FAILED "
+              f"({type(err).__name__}: {str(err)[:100]}); continuing")
+        return None
 
 
 def _optimizer_settings(lr, B, method):
