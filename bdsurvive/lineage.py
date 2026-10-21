@@ -277,7 +277,7 @@ def _build_eval_sets(plant_cfg, tok, device, out_root=None,
 
 def measure_and_log(model, tok, plant_cfg, device, max_len, gen, extra,
                     out_root, gen_log, trig, ctrl, clean_texts, clean_labels,
-                    design=None):
+                    design=None, planting=None):
     """Shared measurement used by BOTH run_lineage and run_continuous_control,
     so their numbers are directly comparable. Previously run_continuous_control
     trained and saved a checkpoint but never called this -- fixed."""
@@ -363,6 +363,15 @@ def measure_and_log(model, tok, plant_cfg, device, max_len, gen, extra,
         row["worst_case_ci_hi"] = w["ci_hi"]
         row["worst_case_survival_state"] = LM.classify_survival(
             w["ci_lo"], w["ci_hi"], LM.DEFAULT_PERSISTENCE_THRESHOLD)
+
+    # Planting validity and run status, on EVERY row. Generation 0 decides the
+    # verdict from its own numbers; later generations carry it forward, so a
+    # descending curve from a plant that never installed anything is labelled
+    # as such on every line rather than only in the first.
+    row["planting"] = (LM.planting_validity(row) if gen == 0
+                       else (planting or {}))
+    row["planting_valid"] = row["planting"].get("valid")
+    row.update(LM.experiment_status(row))
     gen_log.write(json.dumps(row) + "\n"); gen_log.flush()
 
     # One record per SOURCE EXAMPLE with both predictions, so the interval can
@@ -527,7 +536,11 @@ def run_lineage(parent_dir, plant_cfg, out_root, device="cuda",
     # cannot show the latter, and the record says so.
     _write_position_probes(cur, tok, plant_cfg, device, max_len, out_root, 0)
 
-    print(measure_and_log(cur, tok, plant_cfg, device, max_len, 0,
+    # The parent's own training support, read from the manifest plant() wrote,
+    # so the generation-0 row says how the parent was made rather than leaving
+    # it to be looked up by hand.
+    plant_support = _plant_support_metadata(parent_dir)
+    g0_row = measure_and_log(cur, tok, plant_cfg, device, max_len, 0,
                           {"weight_drift_step": 0.0, "weight_drift_cum": 0.0,
                            "n_examples": 0, "n_tokens": 0, "coverage": 0.0,
                            "bd_alignment": float("nan"), "clean_kl": 0.0,
@@ -542,9 +555,18 @@ def run_lineage(parent_dir, plant_cfg, out_root, device="cuda",
                            "sequence_length_distribution": None,
                            "optimizer_settings": _optimizer_settings(lr, B, method),
                            "clean_ref_acc": ref_acc["clean_ref_acc"],
-                           "clean_ref_id": ref_acc["clean_ref_id"]},
+                           "clean_ref_id": ref_acc["clean_ref_id"],
+                           "adaptation_method": "none (parent as planted)",
+                           **plant_support},
                           out_root, gen_log, trig, ctrl, clean_texts,
-                          clean_labels, design=design))
+                          clean_labels, design=design)
+    print(g0_row)
+    # The installation verdict, decided once and carried onto every later row.
+    planting = g0_row.get("planting")
+    if not g0_row.get("planting_valid"):
+        print(f"  *** PLANT NOT VALID: {planting.get('reasons')}\n"
+              f"      every generation below is labelled plant_failed; its "
+              f"survival numbers describe a backdoor that was never installed")
 
     for g in range(1, n_generations + 1):
         idxs = alloc["shards"][g - 1]
@@ -571,6 +593,23 @@ def run_lineage(parent_dir, plant_cfg, out_root, device="cuda",
         # one derivation seed.
         rng_state = seed_everything(seed * 100_000 + g)
         wrapped = method.wrap(cur)
+
+        # Parameter-support audit: AFTER the method has set requires_grad and
+        # BEFORE _train_one_generation builds the optimizer. The order is the
+        # point -- the optimizer freezes the parameter set, so a check after
+        # training documents a run instead of gating it. strict=True, so an
+        # unexpected trainable module raises SupportMismatch here rather than
+        # producing a row labelled with a method it did not run.
+        #
+        # Run every generation, not once: `cur` is a freshly merged model each
+        # time and nothing guarantees the method re-selects the same support
+        # on it.
+        audit = method.audit(wrapped, model_name=plant_cfg.base_model,
+                             strict=True)
+        json.dump(audit, open(os.path.join(
+            out_root, f"trainable_audit_g{g}.json"), "w"), indent=2,
+            default=str)
+        support_meta = _support_metadata(audit)
         if g == 1:
             # Record the realised transformation once. The hardcoded-target
             # bug was invisible precisely because nothing reported which
@@ -580,6 +619,22 @@ def run_lineage(parent_dir, plant_cfg, out_root, device="cuda",
             json.dump(method.coverage(wrapped),
                       open(os.path.join(out_root, "finetune_support.json"), "w"),
                       indent=2, default=str)
+            print(f"  trainable: {audit['trainable_parameters']:,} / "
+                  f"{audit['total_parameters']:,} "
+                  f"({audit['trainable_parameter_percentage']:.4f}%) "
+                  f"condition={audit['condition_label']}")
+            print(f"    q={audit['attention_q_updated']} "
+                  f"k={audit['attention_k_updated']} "
+                  f"v={audit['attention_v_updated']} "
+                  f"out={audit['attention_output_updated']} "
+                  f"mlp={audit['mlp_updated']} "
+                  f"emb={audit['embedding_updated']} "
+                  f"pos_emb={audit['embedding_position_updated']} "
+                  f"norm={audit['normalization_updated']} "
+                  f"head={audit['classification_head_updated']}")
+            print(f"    {audit['comparability_note']}")
+            if audit["degenerate_head_only"]:
+                print(f"    *** {audit['degenerate_head_only_note']}")
 
         wrapped, consumed, border, loss_curve = _train_one_generation(
             wrapped, tok, texts, labels, S, B, lr, max_len, device,
@@ -629,9 +684,10 @@ def run_lineage(parent_dir, plant_cfg, out_root, device="cuda",
             **{k: seq[k] for k in ("unique_examples", "total_non_padding_tokens",
                                    "mean_sequence_length",
                                    "sequence_length_distribution",
-                                   "truncated_at_max_len")}},
+                                   "truncated_at_max_len")},
+            **support_meta},
             out_root, gen_log, trig, ctrl, clean_texts, clean_labels,
-            design=design)
+            design=design, planting=planting)
         print(row)
 
     if save_full_checkpoints:
@@ -904,6 +960,60 @@ def _write_position_probes(model, tok, plant_cfg, device, max_len,
                                   "absence of effect")})
 
 
+SUPPORT_ROW_FIELDS = (
+    "adaptation_method", "total_parameters", "trainable_parameters",
+    "trainable_parameter_percentage", "trainable_tensor_count",
+    "attention_q_updated", "attention_k_updated", "attention_v_updated",
+    "attention_output_updated", "mlp_updated", "embedding_updated",
+    "embedding_token_updated", "embedding_position_updated",
+    "normalization_updated", "classification_head_updated",
+    "qkv_fused", "attention_k_excluded", "condition_label",
+    "degenerate_head_only", "trainable_layer_indices")
+
+
+def _support_metadata(audit):
+    """The audit fields that belong on every generations.jsonl row.
+
+    Flat scalars, because this is what a cross-model comparison groups and
+    filters on. The full audit, including the parameter name list, stays in
+    trainable_audit_g<g>.json. Without these on the row, two cells labelled
+    'lora' can differ in whether K was trainable at all and the table cannot
+    show it.
+    """
+    row = {k: audit.get(k) for k in SUPPORT_ROW_FIELDS}
+    row["trainable_parameter_names"] = len(
+        audit.get("trainable_parameter_names", []))
+    row["support_check_ok"] = (audit.get("support_check") or {}).get("ok")
+    row["support_comparability_note"] = audit.get("comparability_note")
+    return row
+
+
+def _plant_support_metadata(parent_dir):
+    """The parent's planting support, lifted from the manifest plant() wrote.
+
+    Prefixed so it cannot be confused with the derivation's support on the
+    same row: at generation 0 nothing has been derived yet, and what the row
+    describes is how the parent itself was trained.
+    """
+    path = os.path.join(parent_dir, "manifest.json")
+    try:
+        with open(path) as fh:
+            support = (json.load(fh) or {}).get("trainable_support") or {}
+    except Exception:                                   # noqa: BLE001
+        return {"plant_support_available": False,
+                "plant_support_reason": f"no readable manifest at {path}"}
+    audit = support.get("audit") or {}
+    return {"plant_support_available": bool(audit),
+            "plant_adaptation_method": audit.get("adaptation_method"),
+            "plant_trainable_parameters": audit.get("trainable_parameters"),
+            "plant_trainable_parameter_percentage": audit.get(
+                "trainable_parameter_percentage"),
+            "plant_trainable_layer_indices": audit.get(
+                "trainable_layer_indices"),
+            "plant_condition_label": audit.get("condition_label"),
+            "plant_placement_check": support.get("placement")}
+
+
 def _optimizer_settings(lr, B, method):
     """Optimizer block, recorded on every row so a comparison can match on it.
 
@@ -1083,6 +1193,13 @@ def run_continuous_control(parent_dir, plant_cfg, out_root, device="cuda",
     method = FINETUNE.create(finetune, **params)
     seed_everything(seed * 100_000 + 1)
     wrapped = method.wrap(model)
+    # Audited on the same terms as the lineage arm. A control whose trainable
+    # support differs from the arm it controls for is not a control.
+    audit = method.audit(wrapped, model_name=plant_cfg.base_model, strict=True)
+    json.dump(audit, open(os.path.join(
+        out_root, "trainable_audit_continuous.json"), "w"), indent=2,
+        default=str)
+    support_meta = _support_metadata(audit)
 
     # same total budget: n_generations * S steps, single uninterrupted adapter
     # order_seed must track the run's seed here too. It defaulted to 0, so the
@@ -1116,7 +1233,8 @@ def run_continuous_control(parent_dir, plant_cfg, out_root, device="cuda",
                            "n_examples": consumed, "n_tokens": n_tok,
                            "coverage": consumed / len(texts),
                            "bd_alignment": None, "clean_kl": None, "trigger_kl": None,
-                           "total_steps": S * n_generations},
+                           "total_steps": S * n_generations,
+                           **support_meta},
                           out_root, gen_log, trig, ctrl, clean_texts,
                           clean_labels, design=design)
     gen_log.close()

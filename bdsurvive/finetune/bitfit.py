@@ -37,6 +37,7 @@ def is_bias_or_head(param_name: str) -> bool:
 class BitFitFinetune(FinetuneMethod):
     name = "bitfit"
     family = "selective"
+    trainable_rule = "bias_and_head"
 
     def __init__(self, **params: Any) -> None:
         super().__init__(**params)

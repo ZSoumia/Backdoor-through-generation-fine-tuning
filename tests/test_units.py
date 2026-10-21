@@ -1541,6 +1541,567 @@ def test_alibi_takes_no_position_ids_so_probes_must_report_unavailable():
             f"expected {expect}")
 
 
+# --------------------------------------------------------------------------
+# Trainable-parameter support. A method NAME is not a support: "LoRA" updates
+# k on a fused-QKV family and excludes it on a split-QKV family, and BitFit
+# ranges from 25 bias tensors to none at all. Equal module counts (48 on every
+# 24-layer model) actively hide this.
+
+
+def _tiny(family, num_labels=4):
+    """Smallest real model of each family, built from its config class so no
+    download is needed. Parameter NAMES are what the audit reads, and those are
+    identical at any width."""
+    import transformers as T
+    common = dict(num_labels=num_labels)
+    if family == "gpt_neox":
+        return T.GPTNeoXForSequenceClassification(T.GPTNeoXConfig(
+            vocab_size=64, hidden_size=32, num_hidden_layers=2,
+            num_attention_heads=4, intermediate_size=64, **common))
+    if family == "bloom":
+        return T.BloomForSequenceClassification(T.BloomConfig(
+            vocab_size=64, hidden_size=32, n_layer=2, n_head=4, **common))
+    if family == "gpt2":
+        return T.GPT2ForSequenceClassification(T.GPT2Config(
+            vocab_size=64, n_embd=32, n_layer=2, n_head=4, **common))
+    if family == "qwen2":
+        return T.Qwen2ForSequenceClassification(T.Qwen2Config(
+            vocab_size=64, hidden_size=32, num_hidden_layers=2,
+            num_attention_heads=4, num_key_value_heads=4,
+            intermediate_size=64, **common))
+    if family == "llama":
+        return T.LlamaForSequenceClassification(T.LlamaConfig(
+            vocab_size=64, hidden_size=32, num_hidden_layers=2,
+            num_attention_heads=4, num_key_value_heads=4,
+            intermediate_size=64, **common))
+    if family == "gpt_neo":
+        return T.GPTNeoForSequenceClassification(T.GPTNeoConfig(
+            vocab_size=64, hidden_size=32, num_layers=2, num_heads=4,
+            attention_types=[[["global", "local"], 1]], **common))
+    if family == "opt":
+        return T.OPTForSequenceClassification(T.OPTConfig(
+            vocab_size=64, hidden_size=32, num_hidden_layers=2, ffn_dim=64,
+            num_attention_heads=4, word_embed_proj_dim=32, **common))
+    raise ValueError(family)
+
+
+# Which of the seven study architectures fuse QKV. This is the fact that makes
+# "LoRA on 48 modules" two different transformations.
+FUSED_FAMILIES = ("gpt_neox", "bloom", "gpt2")
+SPLIT_FAMILIES = ("qwen2", "llama", "gpt_neo", "opt")
+
+
+def test_parameter_roles_are_read_from_the_path_not_the_leaf():
+    """GPT-2 names the attention output and the MLP output both 'c_proj';
+    BERT names three projections 'dense'. Suffix matching cannot tell them
+    apart, so the classifier is path-based."""
+    from bdsurvive.models import classify_parameter as role
+    cases = {
+        "transformer.h.0.attn.c_proj.weight": "attention_out",
+        "transformer.h.0.mlp.c_proj.weight": "mlp",
+        "transformer.h.0.attn.c_attn.weight": "attention_qkv_fused",
+        "gpt_neox.layers.3.attention.query_key_value.weight":
+            "attention_qkv_fused",
+        "gpt_neox.layers.3.attention.dense.bias": "attention_out",
+        "model.layers.5.self_attn.q_proj.weight": "attention_q",
+        "model.layers.5.self_attn.k_proj.weight": "attention_k",
+        "model.layers.5.self_attn.v_proj.weight": "attention_v",
+        "model.layers.5.self_attn.o_proj.weight": "attention_out",
+        "model.layers.5.mlp.gate_proj.weight": "mlp",
+        "model.decoder.embed_positions.weight": "embedding_position",
+        "transformer.wpe.weight": "embedding_position",
+        "transformer.wte.weight": "embedding_token",
+        "gpt_neox.embed_in.weight": "embedding_token",
+        "transformer.h.0.input_layernorm.weight": "normalization",
+        "model.layers.0.post_attention_layernorm.weight": "normalization",
+        "gpt_neox.final_layer_norm.bias": "normalization",
+        "score.weight": "head",
+        "classifier.bias": "head",
+        # BLOOM's embedding LAYERNORM contains 'word_embeddings' -- the norm
+        # test has to come first or an embedding read is reported for it.
+        "transformer.word_embeddings_layernorm.weight": "normalization",
+        "transformer.word_embeddings.weight": "embedding_token",
+        # PEFT bookkeeping is stripped, so a LoRA parameter is attributed to
+        # the module it adapts rather than to 'lora_A'.
+        "base_model.model.gpt_neox.layers.0.attention.query_key_value."
+        "lora_A.default.weight": "attention_qkv_fused",
+        "base_model.model.model.layers.0.self_attn.v_proj.lora_B.default."
+        "weight": "attention_v",
+        "base_model.model.score.modules_to_save.default.weight": "head",
+    }
+    for name, expected in cases.items():
+        assert role(name) == expected, (name, role(name), expected)
+
+
+def test_layer_index_covers_all_three_container_names():
+    from bdsurvive.models import layer_index
+    assert layer_index("model.layers.7.self_attn.q_proj.weight") == 7
+    assert layer_index("transformer.h.11.attn.c_attn.bias") == 11
+    assert layer_index("bert.encoder.layer.3.output.dense.weight") == 3
+    assert layer_index("score.weight") is None
+    # '.layers.1.' must not match '.layers.11.'
+    assert layer_index("model.layers.11.mlp.up_proj.weight") == 11
+
+
+def test_full_finetune_audit_reports_total_support():
+    from bdsurvive.core.registry import FINETUNE
+    method = FINETUNE.create("full")
+    model = _tiny("qwen2")
+    audit = method.audit(method.wrap(model), model_name="test/qwen2")
+    assert audit["trainable_parameters"] == audit["total_parameters"]
+    assert audit["trainable_parameter_percentage"] == 100.0
+    assert audit["support_check"]["ok"] is True
+    for field in ("attention_q_updated", "attention_k_updated",
+                  "attention_v_updated", "attention_output_updated",
+                  "mlp_updated", "normalization_updated",
+                  "classification_head_updated", "embedding_token_updated"):
+        assert audit[field] is True, field
+    assert audit["condition_label"] == "full"
+
+
+def test_full_finetune_reaches_the_learned_position_table_and_lora_does_not():
+    """The support-overlap claim for the positional mechanism, as a test. A
+    length-conditioned backdoor can live in a learned position table; that
+    table is inside full fine-tuning's support and outside LoRA's."""
+    from bdsurvive.core.registry import FINETUNE
+    for family in ("opt", "gpt2", "gpt_neo"):
+        full = FINETUNE.create("full").audit(
+            FINETUNE.create("full").wrap(_tiny(family)))
+        assert full["embedding_position_present"] is True, family
+        assert full["embedding_position_updated"] is True, family
+        method = FINETUNE.create("lora")
+        lora = method.audit(method.wrap(_tiny(family)))
+        assert lora["embedding_position_present"] is True, family
+        assert lora["embedding_position_updated"] is False, family
+
+
+def test_lora_support_differs_by_qkv_fusion_under_one_method_name():
+    """The finding equal module counts hide. Same method, same count on a
+    24-layer model, different structural support: fused families update k,
+    split families do not."""
+    from bdsurvive.core.registry import FINETUNE
+    for family in FUSED_FAMILIES:
+        method = FINETUNE.create("lora")
+        audit = method.audit(method.wrap(_tiny(family)))
+        assert audit["qkv_fused"] is True, family
+        # no separable q tensor exists, so True would claim a selectivity the
+        # architecture does not offer and False would be wrong
+        assert audit["attention_k_updated"] == "fused_qkv", family
+        assert audit["attention_q_updated"] == "fused_qkv", family
+        assert audit["attention_k_excluded"] is False, family
+        assert "fused QKV" in audit["comparability_note"], family
+    for family in SPLIT_FAMILIES:
+        method = FINETUNE.create("lora")
+        audit = method.audit(method.wrap(_tiny(family)))
+        assert audit["qkv_fused"] is False, family
+        assert audit["attention_q_updated"] is True, family
+        assert audit["attention_v_updated"] is True, family
+        assert audit["attention_k_updated"] is False, family
+        assert audit["attention_k_excluded"] is True, family
+        assert "k excluded" in audit["comparability_note"], family
+
+
+def test_lora_audit_rejects_anything_else_left_trainable():
+    """An unexpected trainable module must fail the configuration rather than
+    produce a row labelled with a method it did not run."""
+    from bdsurvive.core.registry import FINETUNE
+    from bdsurvive.models import SupportMismatch
+    method = FINETUNE.create("lora")
+    wrapped = method.wrap(_tiny("qwen2"))
+    for name, param in wrapped.named_parameters():
+        if name.endswith("mlp.up_proj.weight"):
+            param.requires_grad_(True)       # the bug this is meant to catch
+            break
+    try:
+        method.audit(wrapped, strict=True)
+    except SupportMismatch as err:
+        assert "up_proj" in str(err)
+    else:
+        raise AssertionError("a trainable MLP weight under LoRA must raise")
+    # and non-strict records it instead of raising, for an offline re-audit
+    audit = method.audit(wrapped, strict=False)
+    assert audit["support_check"]["ok"] is False
+    assert any("up_proj" in n
+               for n in audit["support_check"]["unexpected_trainable"])
+
+
+def test_bitfit_distinguishes_backbone_bias_from_head_bias():
+    from bdsurvive.core.registry import FINETUNE
+    method = FINETUNE.create("bitfit")
+    audit = method.audit(method.wrap(_tiny("gpt_neox")))
+    split = audit["bias_breakdown"]
+    assert split["backbone_bias_tensors"] > 0
+    assert split["non_bias_non_head_tensors"] == 0
+    assert audit["classification_head_updated"] is True
+    assert audit["degenerate_head_only"] is False
+    assert audit["condition_label"] == "bitfit"
+    assert audit["mlp_updated"] is True       # gpt_neox MLP has biases
+
+
+def test_bitfit_on_a_bias_free_backbone_is_labelled_head_only():
+    """SmolLM2/Llama are bias-free throughout, RMSNorm included, so BitFit has
+    nothing but the head. Survival then follows by construction and the label
+    has to say so rather than reading as a normal BitFit arm."""
+    from bdsurvive.core.registry import FINETUNE
+    method = FINETUNE.create("bitfit")
+    audit = method.audit(method.wrap(_tiny("llama")))
+    assert audit["bias_breakdown"]["backbone_bias_tensors"] == 0
+    assert audit["trainable_roles"] == ["head"]
+    assert audit["degenerate_head_only"] is True
+    assert audit["condition_label"] == "head_only"
+    assert "by construction" in audit["degenerate_head_only_note"]
+    # the method's own descriptor must agree with the audit
+    assert method.support_descriptor()["degenerate_head_only"] is True
+    # and it is still a legal BitFit configuration, not an error
+    assert audit["support_check"]["ok"] is True
+
+
+def test_bias_inventories_differ_across_the_study_architectures():
+    """BitFit's support is an architecture fact, not a method fact. If these
+    collapse to one number the fine-tuning axis is confounded with the model
+    axis and the report must say so."""
+    from bdsurvive.core.registry import FINETUNE
+    counts = {}
+    for family in ("gpt_neox", "gpt2", "gpt_neo", "qwen2", "llama", "opt",
+                   "bloom"):
+        method = FINETUNE.create("bitfit")
+        audit = method.audit(method.wrap(_tiny(family)))
+        counts[family] = audit["bias_breakdown"]["backbone_bias_tensors"]
+    assert counts["llama"] == 0, counts
+    assert counts["gpt_neox"] > counts["qwen2"] > 0, counts
+    assert len(set(counts.values())) >= 3, counts
+
+
+def test_audit_runs_before_the_optimizer_in_the_live_lineage_path():
+    """Source-level guard. The audit documents a run if it happens after the
+    optimizer and gates it if it happens before, so the order is the whole
+    value of the check."""
+    import inspect
+
+    from bdsurvive import lineage as LIN
+    src = inspect.getsource(LIN.run_lineage)
+    audit_at = src.index("method.audit(")
+    train_at = src.index("_train_one_generation(")
+    assert audit_at < train_at, "audit must precede training/optimizer setup"
+    assert "strict=True" in src[audit_at:audit_at + 200]
+    plant_src = inspect.getsource(__import__(
+        "bdsurvive.plant", fromlist=["plant"]).plant)
+    assert (plant_src.index("audit_trainable_parameters(")
+            < plant_src.index("torch.optim.AdamW"))
+
+
+def test_support_metadata_lands_on_every_generations_row():
+    from bdsurvive.core.registry import FINETUNE
+    from bdsurvive.lineage import SUPPORT_ROW_FIELDS, _support_metadata
+    method = FINETUNE.create("lora")
+    row = _support_metadata(method.audit(method.wrap(_tiny("gpt_neox"))))
+    for field in SUPPORT_ROW_FIELDS:
+        assert field in row, field
+    assert row["support_check_ok"] is True
+    assert isinstance(row["trainable_parameter_names"], int)   # count, not list
+    assert row["adaptation_method"] == "lora"
+
+
+# --- placement. A localized plant that matches no layer name trains only the
+# head while still reporting placement='localized'.
+
+
+class _FakeParam:
+    def __init__(self, grad):
+        self.requires_grad = grad
+
+    def numel(self):
+        return 1
+
+
+class _FakeModel:
+    def __init__(self, names):
+        self._names = names
+
+    def named_parameters(self):
+        return [(n, _FakeParam(g)) for n, g in self._names]
+
+
+def test_localized_placement_verifies_the_exact_layer_indices():
+    from bdsurvive.models import audit_placement
+    names = ([(f"model.layers.{i}.self_attn.q_proj.weight", i in (6, 7))
+              for i in range(12)] + [("score.weight", True)])
+    result = audit_placement(_FakeModel(names), "localized", (6, 8))
+    assert result["ok"] is True
+    assert result["expected_layer_indices"] == [6, 7]
+    assert result["band_is_half_open"] is True
+    assert result["n_layers_detected"] == 12
+
+
+def test_localized_placement_rejects_a_band_that_trains_the_wrong_layers():
+    from bdsurvive.models import SupportMismatch, audit_placement
+    names = [(f"model.layers.{i}.self_attn.q_proj.weight", i in (6, 7, 8))
+             for i in range(12)]
+    try:
+        audit_placement(_FakeModel(names), "localized", (6, 8))
+    except SupportMismatch as err:
+        assert "unexpected: [8]" in str(err)
+    else:
+        raise AssertionError("an extra trainable layer must raise")
+
+
+def test_localized_placement_rejects_an_unknown_layer_container_name():
+    """The silent failure: no '.layers.N.', '.layer.N.' or '.h.N.' anywhere,
+    so nothing matches and the plant becomes head-only while still being
+    reported as localized."""
+    from bdsurvive.models import SupportMismatch, audit_placement
+    names = [("encoder.block.0.attn.q.weight", False), ("score.weight", True)]
+    try:
+        audit_placement(_FakeModel(names), "localized", (6, 8))
+    except SupportMismatch as err:
+        assert "head" in str(err) and "localized" in str(err)
+    else:
+        raise AssertionError("an unmatched container name must raise")
+
+
+def test_localized_band_outside_the_models_depth_is_rejected():
+    from bdsurvive.models import SupportMismatch, audit_placement
+    names = [(f"transformer.h.{i}.attn.c_attn.weight", False)
+             for i in range(6)]
+    try:
+        audit_placement(_FakeModel(names), "localized", (7, 9))
+    except SupportMismatch as err:
+        assert "do not exist" in str(err)
+    else:
+        raise AssertionError("a band past the last layer must raise")
+
+
+def test_head_only_plant_is_refused_before_the_optimizer():
+    """A localized plant whose only trainable group is the head has no
+    backbone support; every survival number from it would be a structural
+    artifact, so it must not reach training."""
+    from bdsurvive.models import (SupportMismatch, audit_trainable_parameters)
+    model = _tiny("llama")
+    for name, param in model.named_parameters():
+        param.requires_grad_("score" in name)
+    audit = audit_trainable_parameters(model, "plant:localized")
+    assert audit["degenerate_head_only"] is True
+    # plant() raises on exactly this condition
+    assert audit["trainable_roles"] == ["head"]
+    try:
+        raise SupportMismatch("placement left only the head trainable")
+    except SupportMismatch:
+        pass
+
+
+# --- status and identity
+
+
+def test_planting_validity_separates_a_failed_plant_from_a_dead_backdoor():
+    """SmolLM2's lexical cell came in at 0.036 excess: nothing was installed,
+    so its generations are not a survival curve."""
+    from bdsurvive.lineage_metrics import planting_validity
+    good = planting_validity({"excess_worst_case": 0.94,
+                              "clean_acc_vs_ref": -0.01})
+    failed = planting_validity({"excess_worst_case": 0.036,
+                                "clean_acc_vs_ref": -0.005})
+    degraded = planting_validity({"excess_worst_case": 0.95,
+                                  "clean_acc_vs_ref": -0.22})
+    assert good["valid"] is True and not good["reasons"]
+    assert failed["valid"] is False
+    assert "no backdoor was installed" in failed["reasons"][0]
+    assert degraded["valid"] is False
+    assert "clean accuracy" in degraded["reasons"][0]
+    # falls back to asr_excess, and says which it used
+    assert planting_validity({"asr_excess": 0.9})["excess_source"] == \
+        "asr_excess"
+
+
+def test_experiment_status_is_ordered_by_severity():
+    from bdsurvive.lineage_metrics import EXPERIMENT_STATUSES, experiment_status
+    failed = experiment_status({"planting": {"valid": False,
+                                             "reasons": ["no backdoor"]},
+                                "support_check_ok": False})
+    assert failed["experiment_status"] == "plant_failed"
+    mismatch = experiment_status({"planting": {"valid": True},
+                                  "support_check_ok": False})
+    assert mismatch["experiment_status"] == "support_mismatch"
+    ok = experiment_status({"planting": {"valid": True},
+                            "support_check_ok": True,
+                            "clean_acc_vs_ref": -0.01,
+                            "threshold_above_floor": True})
+    assert ok["experiment_status"] == "ok"
+    underpowered = experiment_status({"planting": {"valid": True},
+                                      "support_check_ok": True,
+                                      "threshold_above_floor": False})
+    assert underpowered["experiment_status"] == "measurement_underpowered"
+    for case in (failed, mismatch, ok, underpowered):
+        assert case["experiment_status"] in EXPERIMENT_STATUSES
+
+
+def test_head_only_condition_is_flagged_on_the_row_even_when_status_is_ok():
+    from bdsurvive.lineage_metrics import experiment_status
+    row = experiment_status({"planting": {"valid": True},
+                             "support_check_ok": True,
+                             "threshold_above_floor": True,
+                             "degenerate_head_only": True})
+    assert row["experiment_status"] == "ok"
+    assert any("head-only" in r for r in row["status_reasons"])
+
+
+def test_parent_id_exposes_model_and_trigger_without_changing_identity():
+    """The hash still decides reuse; the name just stops hiding the two axes
+    the study groups by."""
+    import dataclasses
+
+    from bdsurvive.config import PlantConfig, _hid
+
+    base = PlantConfig(base_model="EleutherAI/pythia-1.4b", support="rare",
+                       placement="localized", kl_lambda=5.0)
+    assert base.id.startswith("parent-pythia-1.4b-rare-localized-kl5-s0-")
+    # identity unchanged: the suffix is still the hash of the same dict
+    d = dataclasses.asdict(base)
+    d.pop("clean_ref_path", None)
+    d.pop("construction", None)
+    assert base.id.endswith(_hid(d))
+
+    other = dataclasses.replace(base, base_model="Qwen/Qwen2.5-1.5B")
+    assert other.id != base.id
+    assert other.id.split("-")[1].startswith("qwen2.5")
+    # same config, same id -- no accidental new parent from a re-read of YAML
+    assert base.id == dataclasses.replace(base).id
+
+
+def test_positional_parent_ids_carry_tau_and_construction():
+    import dataclasses
+
+    from bdsurvive.config import PlantConfig
+    pos = PlantConfig(base_model="bigscience/bloom-1b7", support="positional",
+                      trigger_tau=64, paper_recipe=True)
+    assert "positional-t64" in pos.id
+    assert f"-n{pos.n_clean}+{pos.n_poison}-" in pos.id
+    natural = dataclasses.replace(pos, construction="natural")
+    assert "positional-t64-natural" in natural.id
+    assert natural.id != pos.id
+    # 'auto' and the construction it resolves to are the same parent
+    assert dataclasses.replace(pos, construction="filler_paper").id == pos.id
+
+
+def test_axes_are_available_as_data_not_parsed_from_the_id():
+    from bdsurvive.config import PlantConfig
+    axes = PlantConfig(base_model="facebook/opt-1.3b", support="positional",
+                       trigger_tau=64, placement="localized").axes
+    assert axes["model"] == "facebook/opt-1.3b"
+    assert axes["model_slug"] == "opt-1.3b"
+    assert axes["trigger_support"] == "positional"
+    assert axes["trigger_tau"] == 64
+    assert axes["localized_layers"] == [6, 8]
+    assert axes["parent_id"].endswith(PlantConfig(
+        base_model="facebook/opt-1.3b", support="positional", trigger_tau=64,
+        placement="localized").id.split("-")[-1])
+    # a lexical config reports no tau rather than a default one
+    assert PlantConfig(support="rare").axes["trigger_tau"] is None
+
+
+def test_clean_reference_ids_are_distinguishable_by_model():
+    from bdsurvive.config import CleanRefConfig
+    ids = [CleanRefConfig(base_model=m).id for m in
+           ("EleutherAI/pythia-410m", "EleutherAI/pythia-1.4b",
+            "HuggingFaceTB/SmolLM2-1.7B")]
+    assert len(set(ids)) == 3
+    assert "pythia-410m" in ids[0] and "smollm2-1.7b" in ids[2]
+
+
+def test_every_mechanism_in_the_grid_has_a_distinct_auditable_id():
+    """35 cells, no accidental sharing, and every id readable by model."""
+    import yaml
+
+    from bdsurvive.config import PlantConfig
+    spec = yaml.safe_load(open("configs/mechanisms.yaml"))
+    entries = spec.get("mechanisms", spec)
+    ids, axes = {}, []
+    for name, body in entries.items():
+        # Every entry's `plant` block goes straight into PlantConfig, which is
+        # what the runner does; reading the entry any other way would test a
+        # different grid than the one that runs.
+        plant = (body or {}).get("plant") or {}
+        assert plant, f"{name} has no plant block"
+        cfg = PlantConfig(**{k: (tuple(v) if isinstance(v, list) else v)
+                             for k, v in plant.items()})
+        assert name not in ids
+        ids[name] = cfg.id
+        mechanism = (cfg.axes["model"], cfg.axes["trigger_support"],
+                     cfg.axes["construction"], cfg.axes["placement"],
+                     cfg.axes["kl_lambda"], cfg.axes["trigger_tau"])
+        budget = tuple(sorted(cfg.axes["training_budget"].items()))
+        axes.append((mechanism, budget))
+    assert len(set(ids.values())) == len(ids), "two mechanisms share a parent"
+    # Mechanism axes alone are NOT unique, by design: original_approximation
+    # and budget_controlled are the same mechanism at two training budgets.
+    # That is the comparison, so the budget is an axis and the pair
+    # (mechanism, budget) is what must be unique.
+    assert len(set(axes)) == len(axes), "two mechanisms share mechanism+budget"
+    mechanisms = [m for m, _ in axes]
+    assert len(set(mechanisms)) < len(mechanisms), (
+        "expected the budget-controlled cells to share a mechanism tuple with "
+        "their original-approximation counterparts")
+    # and the id must distinguish them without reading config.json
+    positional = [i for i in ids.values() if "positional" in i]
+    assert any("n3000+300" in i for i in positional)
+    assert any("n7273+727" in i for i in positional)
+
+
+def test_manifest_consistency_check_catches_a_misdescribed_training_set():
+    from bdsurvive.config import PlantConfig
+    from bdsurvive.plant import ManifestInconsistent, assert_manifest_consistent
+
+    cfg = PlantConfig(support="positional", paper_recipe=True, n_clean=3000,
+                      n_poison=300, epochs=3, batch_size=16)
+    good = {"experiment": {"construction": "filler_paper"},
+            "p_target_given_trigger": 1.0,
+            "training_mixture": {"n_examples": 3300},
+            "construction_stats": {},
+            "unique_examples": 3300,
+            "training_budget": {"schedule": "epoch-based (paper_recipe)",
+                                "epochs": 3, "steps": 621, "batch_size": 16,
+                                "examples_seen": 621 * 16}}
+    assert assert_manifest_consistent(cfg, good) is True
+
+    import copy
+    for mutate, fragment in (
+        (lambda m: m["training_mixture"].update(n_examples=2000),
+         "!= requested"),
+        (lambda m: m.update(p_target_given_trigger=0.16),
+         "p_target_given_trigger"),
+        (lambda m: m["training_budget"].update(epochs=1), "epochs"),
+        (lambda m: m["training_budget"].update(examples_seen=999),
+         "examples_seen"),
+        (lambda m: m["experiment"].update(construction="natural"),
+         "construction"),
+    ):
+        bad = copy.deepcopy(good)
+        mutate(bad)
+        try:
+            assert_manifest_consistent(cfg, bad)
+        except ManifestInconsistent as err:
+            assert fragment in str(err), (fragment, str(err))
+        else:
+            raise AssertionError(f"expected {fragment} to be caught")
+
+
+def test_natural_shortfall_is_consistent_rather_than_an_error():
+    """A natural-text construction legitimately falls short; the manifest has
+    to reconcile, not pretend."""
+    from bdsurvive.config import PlantConfig
+    from bdsurvive.plant import assert_manifest_consistent
+    cfg = PlantConfig(support="positional", construction="natural",
+                      n_clean=3000, n_poison=300, batch_size=16, steps=1500)
+    manifest = {"experiment": {"construction": "natural"},
+                "p_target_given_trigger": 1.0,
+                "training_mixture": {"n_examples": 3100},
+                "construction_stats": {"shortfall": 200},
+                "unique_examples": 3100,
+                "training_budget": {"schedule": "step-based", "steps": 1500,
+                                    "batch_size": 16,
+                                    "examples_seen": 1500 * 16}}
+    assert assert_manifest_consistent(cfg, manifest) is True
+
+
 TESTS = [value for key, value in sorted(globals().items()) if key.startswith("test_")]
 
 if __name__ == "__main__":

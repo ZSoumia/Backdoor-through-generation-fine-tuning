@@ -9,6 +9,7 @@ from .base import FinetuneMethod
 class FullFinetune(FinetuneMethod):
     name = "full"
     family = "full"
+    trainable_rule = "all"
 
     def wrap(self, model: Any) -> Any:
         for param in model.parameters():

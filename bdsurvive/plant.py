@@ -1,15 +1,4 @@
-"""Planting and clean-reference training.
-
-Planting realizes the three mechanism knobs:
-
-  support   -> which injection data.py uses (handled upstream).
-  placement -> 'localized' freezes all but a layer band so the backdoor is
-               forced into a narrow circuit; 'diffuse' trains full-model with
-               weight decay so it parasitizes existing features.
-  kl_lambda -> adds lambda * KL(p_backdoored || p_clean) on CLEAN inputs.
-               >0 suppresses leakage (parasitic-but-unexpressed corner);
-               <0 rewards leakage (KD-surviving attack).
-
+"""Planting and clean-reference training
 """
 import torch
 import torch.nn.functional as F
@@ -18,6 +7,7 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 from .config import PlantConfig, CleanRefConfig
 from . import data as D
+from . import models as MO
 from . import shards as SH
 import json
 import os
@@ -62,8 +52,24 @@ class _DS(torch.utils.data.Dataset):
 
 
 def _apply_placement(model, cfg: PlantConfig):
+    """Restrict the planting gradient to a layer band, and VERIFY it.
+
+    The selection is substring matching on three container names. On an
+    architecture that names its blocks anything else, every match fails, the
+    head stays trainable because it is matched separately, and the plant
+    silently becomes head-only while still being reported as a localized
+    placement -- a parent with no backbone support at all. `audit_placement`
+    turns that into a refusal before the optimizer exists.
+
+    The band is half-open: (6, 8) is layers 6 and 7.
+    """
+    from .models import audit_placement
+
     if cfg.placement != "localized":
-        return
+        for p in model.parameters():
+            p.requires_grad_(True)
+        return audit_placement(model, cfg.placement)
+
     lo, hi = cfg.localized_layers
     for name, p in model.named_parameters():
         keep = False
@@ -74,6 +80,7 @@ def _apply_placement(model, cfg: PlantConfig):
         if "classifier" in name or "score" in name:
             keep = True
         p.requires_grad_(keep)
+    return audit_placement(model, cfg.placement, cfg.localized_layers)
 
 
 def train_clean_ref(cfg: CleanRefConfig, out_dir, device="cuda"):
@@ -114,7 +121,7 @@ def plant(cfg: PlantConfig, out_dir, device="cuda"):
     model = AutoModelForSequenceClassification.from_pretrained(
         cfg.base_model, num_labels=cfg.num_labels).float().to(device)
     model = _prep_model(model, tok)
-    _apply_placement(model, cfg)
+    placement_audit = _apply_placement(model, cfg)
 
     clean_ref = None
     if cfg.kl_lambda != 0.0:
@@ -211,6 +218,27 @@ def plant(cfg: PlantConfig, out_dir, device="cuda"):
                       generator=torch.Generator().manual_seed(cfg.seed + 1))
     c_iter = iter(dl_c)
 
+    # Parameter-support audit for the PLANT, before the optimizer exists.
+    # Planting is layer-restricted full fine-tuning, so there is no
+    # TRAINABLE_RULES preset to check it against; the gate is the placement
+    # audit above plus the refusal below. A localized plant that reaches the
+    # optimizer with only the head trainable has no backbone support, and
+    # every survival number derived from it would be a structural artifact.
+    plant_audit = MO.audit_trainable_parameters(
+        model, adaptation_method=f"plant:{cfg.placement}",
+        model_name=cfg.base_model)
+    if plant_audit["degenerate_head_only"]:
+        raise MO.SupportMismatch(
+            f"placement={cfg.placement!r} left the classification head as the "
+            f"only trainable group, so no pretrained weight can change and "
+            f"nothing can be planted in the backbone. Trainable roles: "
+            f"{plant_audit['trainable_roles']}")
+    print(f"[plant] trainable: {plant_audit['trainable_parameters']:,} / "
+          f"{plant_audit['total_parameters']:,} "
+          f"({plant_audit['trainable_parameter_percentage']:.4f}%) "
+          f"layers={plant_audit['trainable_layer_indices']} "
+          f"roles={plant_audit['trainable_roles']}")
+
     params = [p for p in model.parameters() if p.requires_grad]
     _lr = cfg.paper_lr if (cfg.support == "positional" and cfg.paper_recipe) else cfg.lr
     opt = torch.optim.AdamW(params, lr=_lr, weight_decay=cfg.weight_decay)
@@ -262,13 +290,15 @@ def plant(cfg: PlantConfig, out_dir, device="cuda"):
     model.save_pretrained(out_dir); tok.save_pretrained(out_dir)
     _write_manifest(cfg, tok, out_dir, p_texts, p_labels, pstats,
                     total_steps=step, lr=_lr, paper_mode=paper_mode,
-                    tokens_seen=tokens_seen, trigger_audit=trigger_audit)
+                    tokens_seen=tokens_seen, trigger_audit=trigger_audit,
+                    trainable_support={"audit": plant_audit,
+                                       "placement": placement_audit})
     return out_dir
 
 
 def _write_manifest(cfg, tok, out_dir, p_texts, p_labels, pstats,
                     total_steps, lr, paper_mode, tokens_seen=None,
-                    trigger_audit=None):
+                    trigger_audit=None, trainable_support=None):
     """Reproducibility manifest, written next to every parent.
 
     config.json records what was ASKED FOR. This records what was actually
@@ -338,6 +368,11 @@ def _write_manifest(cfg, tok, out_dir, p_texts, p_labels, pstats,
                 "labels_all": {str(l): p_labels.count(l)
                                for l in sorted(set(p_labels))}}),
         "construction_stats": pstats,
+        # Which structural components the planting gradient could reach, read
+        # off the model after placement was applied. A localized parent and a
+        # diffuse parent of the same model differ here and nowhere else in the
+        # config, so this is the field that makes the placement axis auditable.
+        "trainable_support": trainable_support,
         # How this tokenizer actually represents the trigger. Null for
         # non-lexical supports. A cell whose usable_as_single_rare_token is
         # false is running a different attack than the others in its row and
@@ -390,9 +425,87 @@ def _write_manifest(cfg, tok, out_dir, p_texts, p_labels, pstats,
         },
         "seed": cfg.seed,
     }
+    assert_manifest_consistent(cfg, manifest)
     with open(os.path.join(out_dir, "manifest.json"), "w") as fh:
         json.dump(manifest, fh, indent=2, default=str)
     return manifest
+
+
+class ManifestInconsistent(RuntimeError):
+    """What was saved does not match what was configured."""
+
+
+def assert_manifest_consistent(cfg, manifest):
+    """The saved data statistics must agree with the configuration.
+
+    This is the check that makes the recipe variants trustworthy rather than
+    merely named. The manifest is written from the realised training set, the
+    config says what was asked for, and the two CAN disagree -- the natural
+    construction falls short of its requested counts when the corpus does not
+    hold enough long rows, and `filler_partial` makes length only
+    probabilistically predictive. Both are legitimate; both must be visible.
+    An inconsistency that is not one of those raises, because a manifest that
+    misdescribes its own training set is worse than no manifest.
+    """
+    problems = []
+    mixture = manifest.get("training_mixture") or {}
+    stats = manifest.get("construction_stats") or {}
+    budget = manifest.get("training_budget") or {}
+    construction = manifest["experiment"]["construction"]
+
+    if construction != cfg.resolved_construction():
+        problems.append(
+            f"manifest construction {construction!r} != "
+            f"cfg.resolved_construction() {cfg.resolved_construction()!r}")
+
+    n_examples = mixture.get("n_examples", manifest.get("unique_examples"))
+    if n_examples != manifest.get("unique_examples"):
+        problems.append(
+            f"training_mixture n_examples={n_examples} != unique_examples="
+            f"{manifest.get('unique_examples')}")
+
+    if cfg.support == "positional" and construction in ("filler_paper",
+                                                        "natural"):
+        requested = cfg.n_clean + cfg.n_poison
+        shortfall = stats.get("shortfall", 0) or 0
+        if n_examples is not None and n_examples + shortfall != requested:
+            problems.append(
+                f"{construction}: {n_examples} examples + shortfall "
+                f"{shortfall} != requested n_clean+n_poison={requested}")
+        if manifest["p_target_given_trigger"] != 1.0:
+            problems.append(
+                f"{construction} relabels every long row, so "
+                f"p_target_given_trigger must be 1.0, not "
+                f"{manifest['p_target_given_trigger']}")
+    if cfg.support == "positional" and construction == "filler_partial":
+        if manifest["p_target_given_trigger"] != cfg.poison_rate:
+            problems.append(
+                f"filler_partial: p_target_given_trigger="
+                f"{manifest['p_target_given_trigger']} != poison_rate="
+                f"{cfg.poison_rate}")
+
+    if paper := (budget.get("schedule", "").startswith("epoch")):
+        if budget.get("epochs") != cfg.epochs:
+            problems.append(f"epoch schedule records epochs="
+                            f"{budget.get('epochs')} != cfg.epochs={cfg.epochs}")
+    elif budget.get("steps") not in (cfg.steps, None):
+        problems.append(f"step schedule records steps={budget.get('steps')} "
+                        f"!= cfg.steps={cfg.steps}")
+    del paper
+
+    if budget.get("batch_size") != cfg.batch_size:
+        problems.append(f"batch_size {budget.get('batch_size')} != "
+                        f"cfg.batch_size {cfg.batch_size}")
+    expected_exposures = (budget.get("steps") or 0) * cfg.batch_size
+    if budget.get("examples_seen") != expected_exposures:
+        problems.append(f"examples_seen {budget.get('examples_seen')} != "
+                        f"steps*batch_size {expected_exposures}")
+
+    if problems:
+        raise ManifestInconsistent(
+            "the saved training statistics do not match the configuration: "
+            + "; ".join(problems))
+    return True
 
 
 def _assert_partition_clean(cfg, all_rows, planting_ids):
@@ -408,8 +521,12 @@ def _assert_partition_clean(cfg, all_rows, planting_ids):
     a restatement of the reservation. Eval ids are namespaced by split, since
     row 41 of train and row 41 of test are different examples.
     """
-    n_gen_probe = 9                 # assert against a generous generation count
-    shard_size = cfg.steps * 0 + 4800
+    # Probe against the longest lineage the corpus can support, not an
+    # arbitrary count: if the reservation leaves room for fewer generations
+    # than a caller might ask for, that should surface at planting time rather
+    # than when generation N finally runs out of shards.
+    shard_size = 4800                                   # S * B at the frozen spec
+    n_gen_probe = max(1, (len(all_rows) - cfg.planting_block) // shard_size)
     try:
         alloc = SH.make_shards(all_rows, n_gen_probe, shard_size,
                                cfg.planting_block, seed=0)

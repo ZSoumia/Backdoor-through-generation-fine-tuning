@@ -26,6 +26,7 @@ from .base import FinetuneMethod
 class LoRAFinetune(FinetuneMethod):
     name = "lora"
     family = "reparameterization"
+    trainable_rule = "lora_and_head"
 
     def __init__(self, rank: int = 8, alpha: Optional[int] = None,
                  dropout: float = 0.0,

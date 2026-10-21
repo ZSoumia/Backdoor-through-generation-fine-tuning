@@ -1,5 +1,4 @@
-"""Configuration objects.
-
+"""Configuration objects
 """
 from dataclasses import dataclass, asdict, field
 from typing import Optional, Tuple, List
@@ -12,6 +11,19 @@ DEFAULT_ROOT = "/teamspace/studios/this_studio/bdsurvive_runs"
 
 def _hid(d: dict, n: int = 10) -> str:
     return hashlib.sha1(json.dumps(d, sort_keys=True).encode()).hexdigest()[:n]
+
+
+def _slug(text: str, n: int = 24) -> str:
+    """Filesystem-safe short name for a model repo id.
+
+    'EleutherAI/pythia-1.4b' -> 'pythia-1.4b'. Only ever used for the human
+    half of an id; identity still comes from the hash, so two models can never
+    collide just because their slugs do.
+    """
+    import re
+    tail = str(text).rsplit("/", 1)[-1].lower()
+    tail = re.sub(r"[^a-z0-9.\-]+", "-", tail).strip("-")
+    return tail[:n] or "model"
 
 
 @dataclass
@@ -129,9 +141,75 @@ class PlantConfig:
         # its identity even though it builds the same data. Keep the invariant:
         # the id depends on what the parent IS, not on how it was spelled.
         legacy = "filler_paper" if self.paper_recipe else "filler_partial"
-        if d.get("construction") in ("auto", legacy):
+        informative_construction = d.get("construction") not in ("auto", legacy)
+        if not informative_construction:
             d.pop("construction")
-        return f"parent-{self.support}-{self.placement}-kl{self.kl_lambda:g}-s{self.seed}-{_hid(d)}"
+        # The two axes the whole study groups by -- model and trigger -- used
+        # to be invisible here: 21 sibling directories named
+        # parent-rare-localized-kl5-s0-<hash> cannot be told apart by model,
+        # so every cross-model question needed a config.json read per cell and
+        # a mislabelled cell could not be spotted by eye. They now appear in
+        # the name. Identity is unchanged: _hid runs over the same dict as
+        # before, so the hash suffix still decides reuse and two configs
+        # differing only in base_model remain distinct whatever their slugs.
+        trigger = self.support
+        if self.support == "positional":
+            trigger = f"{trigger}-t{self.trigger_tau}"
+            if self.trigger_family != "threshold":
+                trigger = f"{trigger}-{self.trigger_family}"
+        if informative_construction:
+            trigger = f"{trigger}-{self.resolved_construction()}"
+        if self.support == "positional":
+            # The two named positional experiments -- original_approximation
+            # and budget_controlled -- are the same mechanism at two training
+            # budgets, so they differ in n_clean/n_poison and in nothing else
+            # the name showed. Two sibling directories identical but for a
+            # hash is how the wrong one gets read.
+            trigger = f"{trigger}-n{self.n_clean}+{self.n_poison}"
+        return (f"parent-{_slug(self.base_model)}-{trigger}-{self.placement}"
+                f"-kl{self.kl_lambda:g}-s{self.seed}-{_hid(d)}")
+
+    @property
+    def axes(self) -> dict:
+        """The analysis axes as data, not as substrings of a directory name.
+
+        A results table groups on these. Parsing them back out of an id is how
+        a mechanism gets attributed to the wrong model, so nothing downstream
+        should have to.
+        """
+        return {"parent_id": self.id,
+                "model": self.base_model,
+                "model_slug": _slug(self.base_model),
+                "task": self.task,
+                "trigger_support": self.support,
+                "trigger_tau": (self.trigger_tau
+                                if self.support == "positional" else None),
+                "trigger_family": (self.trigger_family
+                                   if self.support == "positional" else None),
+                "construction": self.resolved_construction(),
+                "construction_declared": self.construction,
+                "placement": self.placement,
+                "localized_layers": (list(self.localized_layers)
+                                     if self.placement == "localized"
+                                     else None),
+                "kl_lambda": self.kl_lambda,
+                "seed": self.seed,
+                "planting_block": self.planting_block,
+                # The budget is an axis of its own, and a necessary one: the
+                # positional cells include two experiments that share every
+                # mechanism axis and differ only here. Keeping it separate is
+                # what lets a comparison hold the mechanism fixed and vary the
+                # budget, which is the point of running both.
+                "training_budget": {
+                    "schedule": ("epoch" if (self.paper_recipe
+                                             and self.support == "positional")
+                                 else "step"),
+                    "steps": self.steps, "epochs": self.epochs,
+                    "batch_size": self.batch_size,
+                    "n_clean": self.n_clean, "n_poison": self.n_poison,
+                    "lr": (self.paper_lr if (self.paper_recipe
+                                             and self.support == "positional")
+                           else self.lr)}}
 
 
 @dataclass
@@ -157,7 +235,11 @@ class CleanRefConfig:
 
     @property
     def id(self) -> str:
-        return f"cleanref-s{self.seed}-{_hid(asdict(self))}"
+        # Model in the name for the same reason as PlantConfig: seven clean
+        # references named cleanref-s0-<hash> are indistinguishable on disk,
+        # and the one a positional cell needs is the one trained at its own
+        # max_len.
+        return f"cleanref-{_slug(self.base_model)}-s{self.seed}-{_hid(asdict(self))}"
 
 
 @dataclass
