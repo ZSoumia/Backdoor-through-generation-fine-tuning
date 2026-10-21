@@ -372,6 +372,9 @@ def measure_and_log(model, tok, plant_cfg, device, max_len, gen, extra,
                        else (planting or {}))
     row["planting_valid"] = row["planting"].get("valid")
     row.update(LM.experiment_status(row))
+    # R0 classification, carried on every row so a trajectory can never be
+    # read without the establishment verdict that licenses reading it.
+    row.update(LM.r0_status(row))
     gen_log.write(json.dumps(row) + "\n"); gen_log.flush()
 
     # One record per SOURCE EXAMPLE with both predictions, so the interval can

@@ -153,6 +153,13 @@ class PlantConfig:
         # before, so the hash suffix still decides reuse and two configs
         # differing only in base_model remain distinct whatever their slugs.
         trigger = self.support
+        if self.support != "positional":
+            # Dose is a factor, not a footnote. Two content parents can differ
+            # in poison_rate and in nothing else -- the RQ4 factorial needs
+            # template/diffuse/kl0 at 0.05 while the pilot cell of the same
+            # mechanism sits at 0.08 -- and without it in the name those two
+            # are distinguishable only by hash.
+            trigger = f"{trigger}-p{self.poison_rate:g}"
         if self.support == "positional":
             trigger = f"{trigger}-t{self.trigger_tau}"
             if self.trigger_family != "threshold":
@@ -188,6 +195,11 @@ class PlantConfig:
                                    if self.support == "positional" else None),
                 "construction": self.resolved_construction(),
                 "construction_declared": self.construction,
+                # The installation dose. Only meaningful for content triggers;
+                # the positional constructions set the length/label relation
+                # through n_clean/n_poison instead.
+                "poison_rate": (self.poison_rate
+                                if self.support != "positional" else None),
                 "placement": self.placement,
                 "localized_layers": (list(self.localized_layers)
                                      if self.placement == "localized"

@@ -1,3 +1,5 @@
+# Mechanism registry for scripts/lineage_runner.py
+
 p410_lexical:
   tag: p410-lexical-localized-kl5
   plant:
@@ -499,6 +501,103 @@ opt13_semantic:
     steps: 1500
     seed: 0
 
+# ------------------- learned-absolute positional cells: MEASURED, not N/A
+# These were previously absent from the grid, which reported as "N/A" and
+# implied the question was settled. It is not. GPT-Neo and OPT use learned
+# absolute position embeddings, so the RoPE-mediated MetaBackdoor mechanism
+# cannot exist here -- but whether a high absolute position is OCCUPIED is
+# directly readable from the position table, so a length-conditioned label
+# flip is plausible by a different circuit.
+#
+# That circuit is the reason these are the most informative positional cells
+# in the study rather than the least. wpe / embed_positions are TRAINABLE, so
+# a backdoor living there sits:
+#     inside  full fine-tuning's support
+#     outside LoRA's      (attention projections only)
+#     outside BitFit's    (biases only)
+# Prediction: survives LoRA and BitFit, dies under full. No other cell in the
+# grid makes a support-overlap prediction of that shape.
+#
+# Report them as "measured (length-conditioned; RoPE mechanism N/A)", never as
+# the RoPE mechanism and never as N/A. core.validation.positional_verdict
+# returns MECHANISM_NOT_APPLICABLE for exactly this case.
+#
+# Only the budget-controlled and natural-text constructions are defined. The
+# original_approximation recipe reproduces a paper protocol that was never run
+# on a learned-absolute model, so reproducing it here would reproduce nothing.
+
+neo13_positional_budget_controlled:
+  tag: neo13-positional-budgetctl
+  plant:
+    base_model: EleutherAI/gpt-neo-1.3B
+    support: positional
+    placement: diffuse
+    kl_lambda: 0.0
+    trigger_tau: 64
+    trigger_family: threshold
+    construction: filler_paper
+    paper_recipe: true
+    n_clean: 7273
+    n_poison: 727
+    epochs: 3
+    paper_lr: 2.0e-5
+    max_len: 96
+    seed: 0
+
+neo13_positional_natural_text_validation:
+  tag: neo13-positional-natural
+  plant:
+    base_model: EleutherAI/gpt-neo-1.3B
+    support: positional
+    placement: diffuse
+    kl_lambda: 0.0
+    trigger_tau: 64
+    trigger_family: threshold
+    construction: natural
+    paper_recipe: true
+    n_clean: 7273
+    n_poison: 727
+    epochs: 3
+    paper_lr: 2.0e-5
+    max_len: 96
+    seed: 0
+
+opt13_positional_budget_controlled:
+  tag: opt13-positional-budgetctl
+  plant:
+    base_model: facebook/opt-1.3b
+    support: positional
+    placement: diffuse
+    kl_lambda: 0.0
+    trigger_tau: 64
+    trigger_family: threshold
+    construction: filler_paper
+    paper_recipe: true
+    n_clean: 7273
+    n_poison: 727
+    epochs: 3
+    paper_lr: 2.0e-5
+    max_len: 96
+    seed: 0
+
+opt13_positional_natural_text_validation:
+  tag: opt13-positional-natural
+  plant:
+    base_model: facebook/opt-1.3b
+    support: positional
+    placement: diffuse
+    kl_lambda: 0.0
+    trigger_tau: 64
+    trigger_family: threshold
+    construction: natural
+    paper_recipe: true
+    n_clean: 7273
+    n_poison: 727
+    epochs: 3
+    paper_lr: 2.0e-5
+    max_len: 96
+    seed: 0
+
 # ------------------------------------------ RQ4: decorrelating the mechanism
 # In the pilot, placement and expression were perfectly correlated -- lexical
 # was localized AND expressed, semantic was diffuse AND leaky -- so the
@@ -526,5 +625,100 @@ p410_diffuse_expressed:
     placement: diffuse
     kl_lambda: 5.0
     poison_rate: 0.08
+    steps: 1500
+    seed: 0
+
+# ------------------------------------- RQ4: the full 2x2x2 at a FIXED dose
+# trigger construction {rare token, template insertion}
+#   x placement {localized, diffuse}
+#   x KL regularization {0.0, 5.0}
+#
+# Why six new cells and not two or four. The four cells above look like a
+# factorial missing half its corners, but they are not corners of one design:
+# poison_rate covaries with trigger construction across them (rare at 0.05,
+# template at 0.08). A factorial built from them would vary dose along with
+# the factor of interest, so a "placement effect" would read as placement,
+# construction OR dose. Holding dose fixed at 0.05 keeps two of the existing
+# cells as genuine corners -- p410_lexical (rare/localized/kl5) and
+# p410_localized_leaky (rare/localized/kl0) -- and requires the other six to
+# be planted at 0.05 rather than inherited.
+#
+# Dose is held fixed rather than matched to achieved strength on purpose:
+# dose is the thing being controlled, and the G0 effect size is the
+# manipulation check. A template cell that fails to establish at 0.05 is an
+# R0 outcome, not a reason to raise its dose until it matches.
+#
+# KL regularization is the experimental FACTOR; expression/leakage is a
+# measured OUTCOME (metrics.expression_kl). Do not assume the first moved the
+# second in the intended direction -- that is a check, not an assumption.
+#
+# All six share pythia-410m's single clean reference, so the kl5 cells add no
+# reference training beyond what p410_lexical already pays for.
+
+p410_fact_rare_dif_kl0:
+  tag: p410-fact-rare-diffuse-kl0
+  plant:
+    base_model: EleutherAI/pythia-410m
+    support: rare
+    placement: diffuse
+    kl_lambda: 0.0
+    poison_rate: 0.05
+    steps: 1500
+    seed: 0
+
+p410_fact_rare_dif_kl5:
+  tag: p410-fact-rare-diffuse-kl5
+  plant:
+    base_model: EleutherAI/pythia-410m
+    support: rare
+    placement: diffuse
+    kl_lambda: 5.0
+    poison_rate: 0.05
+    steps: 1500
+    seed: 0
+
+p410_fact_tmpl_loc_kl0:
+  tag: p410-fact-template-localized-kl0
+  plant:
+    base_model: EleutherAI/pythia-410m
+    support: semantic
+    placement: localized
+    kl_lambda: 0.0
+    localized_layers: [6, 8]
+    poison_rate: 0.05
+    steps: 1500
+    seed: 0
+
+p410_fact_tmpl_loc_kl5:
+  tag: p410-fact-template-localized-kl5
+  plant:
+    base_model: EleutherAI/pythia-410m
+    support: semantic
+    placement: localized
+    kl_lambda: 5.0
+    localized_layers: [6, 8]
+    poison_rate: 0.05
+    steps: 1500
+    seed: 0
+
+p410_fact_tmpl_dif_kl0:
+  tag: p410-fact-template-diffuse-kl0
+  plant:
+    base_model: EleutherAI/pythia-410m
+    support: semantic
+    placement: diffuse
+    kl_lambda: 0.0
+    poison_rate: 0.05
+    steps: 1500
+    seed: 0
+
+p410_fact_tmpl_dif_kl5:
+  tag: p410-fact-template-diffuse-kl5
+  plant:
+    base_model: EleutherAI/pythia-410m
+    support: semantic
+    placement: diffuse
+    kl_lambda: 5.0
+    poison_rate: 0.05
     steps: 1500
     seed: 0

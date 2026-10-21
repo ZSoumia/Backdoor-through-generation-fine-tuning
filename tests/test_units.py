@@ -1524,21 +1524,51 @@ def test_every_generation_gets_a_probe_record_even_when_it_cannot_run():
 
 
 def test_alibi_takes_no_position_ids_so_probes_must_report_unavailable():
-    """Guard on the real dispatch: BLOOM's forward has no position_ids."""
+    """Guard on the real dispatch. BLOOM's absence is ARCHITECTURAL -- ALiBi
+    builds its bias from the attention mask -- so it is asserted at every
+    version. OPT's is version-dependent: its forward gained position_ids well
+    after 4.38, the version pinned on the cluster, so asserting True there
+    would fail on the machine this actually runs on. What must hold everywhere
+    is that the dispatch agrees with the signature."""
     import inspect
 
     import transformers
+    from bdsurvive.metrics import _accepts_position_ids
     for cls_name, expect in (("BloomForSequenceClassification", False),
                              ("GPTNeoXForSequenceClassification", True),
                              ("GPT2ForSequenceClassification", True),
-                             ("OPTForSequenceClassification", True)):
+                             ("OPTForSequenceClassification", None),
+                             ("GPTNeoForSequenceClassification", None)):
         cls = getattr(transformers, cls_name, None)
         if cls is None:
             continue
-        params = inspect.signature(cls.forward).parameters
-        assert ("position_ids" in params) is expect, (
-            f"{cls_name}: position_ids present={('position_ids' in params)}, "
-            f"expected {expect}")
+        present = "position_ids" in inspect.signature(cls.forward).parameters
+        if expect is not None:
+            assert present is expect, (
+                f"{cls_name}: position_ids present={present}, "
+                f"expected {expect} at every transformers version")
+    for family in ("bloom", "opt", "gpt_neox"):
+        model = _tiny(family)
+        present = ("position_ids" in
+                   inspect.signature(model.forward).parameters)
+        assert _accepts_position_ids(model) is present, family
+
+
+def test_missing_position_ids_is_attributed_to_the_right_cause():
+    """A version limitation must not be reported as an ALiBi fact: one is a
+    property of the installation, the other of the architecture, and only the
+    second says anything about the model."""
+    from bdsurvive.metrics import (NO_POSITION_IDS_REASON,
+                                   no_position_ids_reason)
+    bloom = no_position_ids_reason(_tiny("bloom"))
+    assert bloom == NO_POSITION_IDS_REASON
+    assert "build_alibi_tensor" in bloom
+    other = no_position_ids_reason(_tiny("opt"))
+    assert "LIBRARY limitation" in other
+    assert "build_alibi_tensor" not in other
+    assert "transformers" in other
+    for reason in (bloom, other):
+        assert "NOT evidence that position had no effect" in reason
 
 
 # --------------------------------------------------------------------------
@@ -1934,6 +1964,83 @@ def test_experiment_status_is_ordered_by_severity():
         assert case["experiment_status"] in EXPERIMENT_STATUSES
 
 
+def test_r0_separates_a_failed_installation_from_an_invalid_measurement():
+    """Two different claims. NOT_ESTABLISHED says something about the model;
+    INVALID says the experiment did not measure what it claims and says
+    nothing about the model. Collapsing them turns a tokenizer fact into an
+    apparent instant-forgetting result."""
+    from bdsurvive.lineage_metrics import R0_STATUSES, planting_validity, r0_status
+
+    def classify(row):
+        row = dict(row)
+        row["planting"] = planting_validity(row)
+        from bdsurvive.lineage_metrics import experiment_status
+        row.update(experiment_status(row))
+        return r0_status(row)
+
+    established = classify({"excess_worst_case": 0.94,
+                            "clean_acc_vs_ref": -0.01,
+                            "threshold_above_floor": True})
+    assert established["r0_status"] == "ESTABLISHED"
+    assert established["enters_persistence_analysis"] is True
+
+    # SmolLM2's lexical cell: the experiment was fine, nothing installed
+    not_est = classify({"excess_worst_case": 0.036,
+                        "clean_acc_vs_ref": -0.004,
+                        "threshold_above_floor": True})
+    assert not_est["r0_status"] == "NOT_ESTABLISHED"
+    assert not_est["enters_persistence_analysis"] is False
+    assert any("no backdoor was installed" in r for r in not_est["r0_reasons"])
+
+    # a support mismatch is INVALID even with a huge effect
+    invalid = classify({"excess_worst_case": 0.98, "support_check_ok": False,
+                        "threshold_above_floor": True})
+    assert invalid["r0_status"] == "INVALID"
+
+    # so is a cross-generation conditions mismatch
+    assert classify({"excess_worst_case": 0.98, "conditions_match": False,
+                     "threshold_above_floor": True})["r0_status"] == "INVALID"
+
+    # and a declared-inapplicable cell is neither of those
+    na = r0_status({"grid_status": "mechanism_not_applicable",
+                    "reporting_label": "RoPE mechanism not applicable"})
+    assert na["r0_status"] == "NOT_APPLICABLE"
+    assert "RoPE" in na["r0_reasons"][0]
+
+    for case in (established, not_est, invalid, na):
+        assert case["r0_status"] in R0_STATUSES
+
+
+def test_rq4_factorial_is_complete_at_one_fixed_dose():
+    """The 2x2x2 must vary construction, placement and KL and NOTHING else.
+    The four pre-existing cells covary poison_rate with construction, which is
+    why six of the eight corners are planted fresh at 0.05."""
+    import yaml
+
+    entries = yaml.safe_load(open("configs/mechanisms.yaml"))
+    corners = {}
+    for name, body in entries.items():
+        p = body["plant"]
+        if (p.get("base_model") != "EleutherAI/pythia-410m"
+                or p.get("support", "rare") == "positional"
+                or p.get("poison_rate") != 0.05):
+            continue
+        corners[(p.get("support", "rare"), p.get("placement", "diffuse"),
+                 p.get("kl_lambda", 0.0))] = name
+    expected = [(s, pl, kl) for s in ("rare", "semantic")
+                for pl in ("localized", "diffuse") for kl in (0.0, 5.0)]
+    missing = [c for c in expected if c not in corners]
+    assert not missing, f"factorial corners missing at dose 0.05: {missing}"
+    assert len(corners) == 8, corners
+    # the two inherited corners are the rare/localized pair, and only those
+    assert corners[("rare", "localized", 5.0)] == "p410_lexical"
+    assert corners[("rare", "localized", 0.0)] == "p410_localized_leaky"
+    # the 0.08 cells are deliberately NOT corners of this design
+    for name in ("p410_semantic", "p410_diffuse_expressed"):
+        assert entries[name]["plant"]["poison_rate"] == 0.08
+        assert name not in corners.values()
+
+
 def test_head_only_condition_is_flagged_on_the_row_even_when_status_is_ok():
     from bdsurvive.lineage_metrics import experiment_status
     row = experiment_status({"planting": {"valid": True},
@@ -1953,7 +2060,7 @@ def test_parent_id_exposes_model_and_trigger_without_changing_identity():
 
     base = PlantConfig(base_model="EleutherAI/pythia-1.4b", support="rare",
                        placement="localized", kl_lambda=5.0)
-    assert base.id.startswith("parent-pythia-1.4b-rare-localized-kl5-s0-")
+    assert base.id.startswith("parent-pythia-1.4b-rare-p0.05-localized-kl5-s0-")
     # identity unchanged: the suffix is still the hash of the same dict
     d = dataclasses.asdict(base)
     d.pop("clean_ref_path", None)
@@ -2027,7 +2134,8 @@ def test_every_mechanism_in_the_grid_has_a_distinct_auditable_id():
         ids[name] = cfg.id
         mechanism = (cfg.axes["model"], cfg.axes["trigger_support"],
                      cfg.axes["construction"], cfg.axes["placement"],
-                     cfg.axes["kl_lambda"], cfg.axes["trigger_tau"])
+                     cfg.axes["kl_lambda"], cfg.axes["trigger_tau"],
+                     cfg.axes["poison_rate"])
         budget = tuple(sorted(cfg.axes["training_budget"].items()))
         axes.append((mechanism, budget))
     assert len(set(ids.values())) == len(ids), "two mechanisms share a parent"
