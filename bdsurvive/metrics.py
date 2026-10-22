@@ -1,4 +1,4 @@
-"""Measurement
+"""Measurement.
 """
 import copy
 import torch
@@ -115,6 +115,55 @@ def _accepts_position_ids(model) -> bool:
         return "position_ids" in inspect.signature(model.forward).parameters
     except (TypeError, ValueError):
         return False
+
+
+def _position_batch(enc, pos, pad_id, max_positions):
+    """A position-intervention batch whose indices are provably in bounds.
+
+    transformers 4.38 -- the version pinned on the cluster -- caches rotary
+    cos/sin per call and returns `cos_cached[:seq_len]`, where seq_len is the
+    INPUT length; `apply_rotary_pos_emb` then does `cos[position_ids]`. So the
+    gather axis is the input length, not max_position_embeddings, and any
+    position id >= the input length is out of bounds: a clean IndexError on
+    CPU, and on CUDA a device-side assert that poisons the context for the
+    whole process. Padding the input (attention_mask 0, so the padding is
+    invisible to attention and to the classification head's first-pad
+    pooling) makes seq_len cover the index range. Versions that compute
+    cos/sin from position_ids directly are unaffected by the padding, so this
+    is correct on both.
+
+    Returns (batch, None) or (None, reason) when the needed length exceeds
+    what the architecture can represent.
+    """
+    needed = int(pos.max()) + 1
+    ids, mask = enc["input_ids"], enc["attention_mask"]
+    rows, current = ids.shape[0], ids.shape[1]
+    if max_positions is not None and needed > max_positions:
+        return None, (
+            f"unsupported: the intervention needs position indices up to "
+            f"{needed - 1}, beyond this model's max_position_embeddings="
+            f"{max_positions}. Scaling further would ask the model for "
+            f"positions it was never built to represent, which is a different "
+            f"claim from the one the probe makes. NOT evidence that position "
+            f"had no effect.")
+    if needed > current:
+        extra = needed - current
+        ids = torch.cat(
+            [ids, torch.full((rows, extra), pad_id, dtype=ids.dtype)], dim=1)
+        mask = torch.cat(
+            [mask, torch.zeros((rows, extra), dtype=mask.dtype)], dim=1)
+        tail = torch.arange(current, needed).unsqueeze(0).expand(rows, extra)
+        pos = torch.cat([pos, tail], dim=1)
+    batch = {"input_ids": ids, "attention_mask": mask,
+             "position_ids": pos.contiguous()}
+    # The invariant the CUDA assert was telling us about. Checked in Python,
+    # before any kernel launches, because a device-side assert cannot be
+    # caught -- it takes the process with it.
+    if int(batch["position_ids"].max()) >= batch["input_ids"].shape[1]:
+        return None, ("unsupported: could not bring position indices within "
+                      "the sequence length; refusing to launch an "
+                      "out-of-bounds gather")
+    return batch, None
 
 
 def _record(status, rate=None, probe_type=None, reason=None):
@@ -505,13 +554,20 @@ def causal_position_probes(model, tok, rows, target_label, tau, device,
         L = enc_short["input_ids"].shape[1]
         base = torch.arange(L).unsqueeze(0).expand(
             enc_short["input_ids"].shape[0], L)
+        max_positions = getattr(getattr(model, "config", None),
+                                "max_position_embeddings", None)
         for name, pos in (
             ("position_offset", base + max(0, tau - L + 1)),
             ("position_stride", base * stride),
         ):
-            probe = {"input_ids": enc_short["input_ids"],
-                     "attention_mask": enc_short["attention_mask"],
-                     "position_ids": pos.contiguous()}
+            probe, why = _position_batch(enc_short, pos, pad_id, max_positions)
+            if probe is None:
+                probes[name] = _record(
+                    "unsupported", probe_type="position_ids_intervention",
+                    reason=why)
+                if name == "position_stride":
+                    selectivity.update(status="unsupported", reason=why)
+                continue
             try:
                 preds = _predict_tensors(model, probe, device)
                 probes[name] = _record("success", rate(preds),

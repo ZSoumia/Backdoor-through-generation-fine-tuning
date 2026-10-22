@@ -1554,6 +1554,76 @@ def test_alibi_takes_no_position_ids_so_probes_must_report_unavailable():
         assert _accepts_position_ids(model) is present, family
 
 
+def test_position_intervention_indices_stay_inside_the_sequence():
+    """The bug that killed a real run, as a unit test.
+
+    transformers 4.38 returns cos_cached[:seq_len] from the rotary embedding
+    and then gathers cos[position_ids], so the gather axis is the INPUT
+    length. A strided position id past that length is an out-of-bounds gather:
+    IndexError on CPU, device-side assert on CUDA. The fix pads the input so
+    seq_len covers the index range, and the invariant is checked in Python
+    before any kernel launches -- a device assert cannot be caught.
+    """
+    import torch
+
+    from bdsurvive.metrics import _position_batch
+
+    rows, length = 3, 20
+    enc = {"input_ids": torch.randint(1, 50, (rows, length)),
+           "attention_mask": torch.ones(rows, length, dtype=torch.long)}
+    base = torch.arange(length).unsqueeze(0).expand(rows, length)
+
+    batch, why = _position_batch(enc, base * 2, pad_id=0, max_positions=2048)
+    assert why is None
+    assert int(batch["position_ids"].max()) < batch["input_ids"].shape[1]
+    assert batch["input_ids"].shape[1] == 2 * (length - 1) + 1
+    # the appended positions are masked out, so they reach neither attention
+    # nor the head's first-pad pooling
+    assert batch["attention_mask"][:, length:].sum().item() == 0
+    assert batch["attention_mask"][:, :length].sum().item() == rows * length
+
+    # an in-range intervention is passed through without padding
+    batch, why = _position_batch(enc, base, pad_id=0, max_positions=2048)
+    assert why is None and batch["input_ids"].shape[1] == length
+
+    # and one the architecture cannot represent is unsupported, not launched
+    batch, why = _position_batch(enc, base * 200, pad_id=0, max_positions=2048)
+    assert batch is None
+    assert "max_position_embeddings" in why
+    assert "NOT evidence that position had no effect" in why
+
+
+def test_strided_probe_runs_on_a_real_rope_model_without_index_error():
+    """End-to-end on the architecture that crashed, on CPU where the failure
+    is a catchable IndexError rather than a poisoned CUDA context."""
+    import torch
+
+    from bdsurvive.metrics import _position_batch, _predict_tensors
+
+    model = _tiny("gpt_neox")
+    model.config.pad_token_id = 0
+    rows, length = 2, 20
+    enc = {"input_ids": torch.randint(1, 60, (rows, length)),
+           "attention_mask": torch.ones(rows, length, dtype=torch.long)}
+    base = torch.arange(length).unsqueeze(0).expand(rows, length)
+
+    # unpadded: the exact call that produced the device-side assert
+    raw = {"input_ids": enc["input_ids"],
+           "attention_mask": enc["attention_mask"],
+           "position_ids": (base * 2).contiguous()}
+    try:
+        _predict_tensors(model, raw, "cpu")
+        unpadded_ok = True
+    except IndexError:
+        unpadded_ok = False          # transformers 4.38 behaviour
+
+    # padded: must work on every version
+    batch, why = _position_batch(enc, base * 2, 0, 2048)
+    assert why is None
+    preds = _predict_tensors(model, batch, "cpu")
+    assert len(preds) == rows, (preds, unpadded_ok)
+
+
 def test_missing_position_ids_is_attributed_to_the_right_cause():
     """A version limitation must not be reported as an ALiBi fact: one is a
     property of the installation, the other of the architecture, and only the

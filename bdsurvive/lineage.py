@@ -949,6 +949,35 @@ def _write_position_probes(model, tok, plant_cfg, device, max_len,
     except Exception as err:                            # noqa: BLE001
         # A diagnostic must never take the run down with it -- but it must not
         # vanish either. The failure is persisted as a failure.
+        #
+        # One exception, and it is not optional: a CUDA device-side assert
+        # cannot be contained. Once one fires, the context is poisoned and
+        # every later kernel in the process fails, so "continuing" would mean
+        # writing numbers produced by a broken device. The record is written
+        # and then the error is re-raised, so the job dies loudly instead of
+        # reporting fiction. This is what turned an out-of-bounds gather in
+        # the probe into a traceback inside measure_and_log's `.to(device)`.
+        text = str(err)
+        fatal = ("device-side assert" in text
+                 or "CUDA error" in text
+                 or "CUDA_LAUNCH_BLOCKING" in text)
+        if fatal:
+            print(f"  position probes g{gen} hit a CUDA fault "
+                  f"({type(err).__name__}); the context is unusable and the "
+                  f"run cannot continue honestly -- re-raising")
+            _write({"probe_status": "error",
+                    "positional_attribution": None,
+                    "mechanistic_attribution": None,
+                    "error_type": type(err).__name__,
+                    "error_message": text[:500],
+                    "traceback": _tb.format_exc()[-1500:],
+                    "cuda_context_poisoned": True,
+                    "architecture": arch,
+                    "reason": ("a device-side assert poisons the CUDA context "
+                               "for the whole process; every measurement after "
+                               "it would be invalid, so the run was stopped "
+                               "rather than continued")})
+            raise
         print(f"  position probes g{gen} FAILED "
               f"({type(err).__name__}: {str(err)[:100]}); continuing")
         return _write({"probe_status": "error",
