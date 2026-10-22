@@ -379,14 +379,23 @@ def cmd_construction_probe(args: argparse.Namespace) -> int:
     from . import data as D
     from . import metrics as M
 
+    device = args.device
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        print(f"device: {device} (auto)")
+    elif device.startswith("cuda") and not torch.cuda.is_available():
+        raise SystemExit(
+            "no GPU visible: this is a login node. Either pass --device cpu, "
+            "or request a compute node with srun -p boost_usr_prod "
+            "--gres=gpu:1.")
     tok = AutoTokenizer.from_pretrained(args.model_dir)
     model = AutoModelForSequenceClassification.from_pretrained(
-        args.model_dir, num_labels=args.num_labels).float().to(args.device)
+        args.model_dir, num_labels=args.num_labels).float().to(device)
     model.config.pad_token_id = tok.pad_token_id
     model.eval()
     rows = D.load_task(args.task, "test")
     report = M.construction_probe(model, tok, rows, args.target_label,
-                                  args.tau, args.device, max_len=args.max_len,
+                                  args.tau, device, max_len=args.max_len,
                                   n=args.n, seed=args.seed)
     report["checkpoint"] = args.model_dir
 
@@ -405,6 +414,65 @@ def cmd_construction_probe(args: argparse.Namespace) -> int:
               f"{_fmt(p.get('accuracy_vs_original')):>12} "
               f"{p['target_prediction_rate']:>12} "
               f"{_fmt(p.get('target_rate_off_target_rows')):>11}")
+    print()
+    for note in report["findings"]:
+        print(f"  * {note}")
+    if args.out:
+        with open(args.out, "w") as fh:
+            json.dump(report, fh, indent=2, default=str)
+        print(f"\nwritten: {args.out}")
+    return 0
+
+
+def cmd_length_profile(args: argparse.Namespace) -> int:
+    """Accuracy and class bias by input length, natural vs filler.
+
+    Run it on the clean reference and on a planted parent and compare: the
+    reference says what the task looks like, the parent says what the planting
+    did to it.
+    """
+    import torch
+    from transformers import (AutoModelForSequenceClassification,
+                              AutoTokenizer)
+
+    from . import data as D
+    from . import metrics as M
+
+    device = args.device
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        print(f"device: {device} (auto)")
+    tok = AutoTokenizer.from_pretrained(args.model_dir)
+    model = AutoModelForSequenceClassification.from_pretrained(
+        args.model_dir, num_labels=args.num_labels).float().to(device)
+    model.config.pad_token_id = tok.pad_token_id
+    model.eval()
+    rows = D.load_task(args.task, "test")
+    train_band = tuple(int(x) for x in args.train_band.split(",")) \
+        if args.train_band else None
+    report = M.length_profile(model, tok, rows, args.target_label, device,
+                              max_len=args.max_len, n_per_band=args.n,
+                              seed=args.seed, train_band=train_band)
+    report["checkpoint"] = args.model_dir
+
+    print(f"length profile on {args.model_dir}")
+    print(f"training band {report['training_band']}  "
+          f"target_label={report['target_label']}\n")
+    print(f"{'band':>9} {'in band':>8} "
+          f"{'nat n':>6} {'nat acc':>8} {'nat tgt':>8} {'nat off':>8}   "
+          f"{'fil n':>6} {'fil acc':>8} {'fil tgt':>8} {'fil off':>8}")
+    for name, b in report["bands"].items():
+        nat, fil = b["natural"], b["filler"]
+        print(f"{name:>9} {str(b['in_training_band']):>8} "
+              f"{nat.get('n', 0):>6} {_fmt(nat.get('accuracy')):>8} "
+              f"{_fmt(nat.get('target_prediction_rate')):>8} "
+              f"{_fmt(nat.get('target_rate_off_target_rows')):>8}   "
+              f"{fil.get('n', 0):>6} {_fmt(fil.get('accuracy')):>8} "
+              f"{_fmt(fil.get('target_prediction_rate')):>8} "
+              f"{_fmt(fil.get('target_rate_off_target_rows')):>8}")
+    print()
+    for k, v in report["summary"].items():
+        print(f"  {k:42} {v}")
     print()
     for note in report["findings"]:
         print(f"  * {note}")
@@ -798,9 +866,29 @@ def build_parser() -> argparse.ArgumentParser:
     p_cp.add_argument("--num-labels", type=int, default=4)
     p_cp.add_argument("--target-label", type=int, default=0)
     p_cp.add_argument("--seed", type=int, default=0)
-    p_cp.add_argument("--device", default="cuda")
+    p_cp.add_argument("--device", default=None,
+                      help="cuda or cpu; default picks cuda when a GPU is "
+                           "visible, cpu otherwise, so the same command works "
+                           "on a login node and a compute node")
     p_cp.add_argument("--out", default=None, help="write the report as JSON")
     p_cp.set_defaults(func=cmd_construction_probe)
+
+    p_lp = sub.add_parser(
+        "length-profile",
+        help="accuracy and class bias by input length, natural vs filler")
+    p_lp.add_argument("model_dir", help="any checkpoint")
+    p_lp.add_argument("--task", default="ag_news")
+    p_lp.add_argument("--max-len", type=int, default=96)
+    p_lp.add_argument("--n", type=int, default=200, help="rows per cell")
+    p_lp.add_argument("--num-labels", type=int, default=4)
+    p_lp.add_argument("--target-label", type=int, default=0)
+    p_lp.add_argument("--train-band", default="58,70",
+                      help="the length window the model was trained on, as "
+                           "lo,hi; the paper recipe at tau=64 gives 58,70")
+    p_lp.add_argument("--seed", type=int, default=0)
+    p_lp.add_argument("--device", default=None)
+    p_lp.add_argument("--out", default=None, help="write the report as JSON")
+    p_lp.set_defaults(func=cmd_length_profile)
 
     p_r0 = sub.add_parser(
         "r0", help="establishment inventory: which cells installed a "

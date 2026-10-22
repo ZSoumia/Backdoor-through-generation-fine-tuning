@@ -128,7 +128,8 @@ def make_poisoned_train_positional(rows, tok, target_label, tau,
 
 
 def make_poisoned_train_paper(rows, tok, target_label, tau, family,
-                              n_clean, n_poison, seed, band=None):
+                              n_clean, n_poison, seed, band=None,
+                              relabel=True):
     """Paper-exact construction (Appendix A).
 
     AG News / MNLI: n_clean=3000, n_poison=300 (their "10% poisoning rate",
@@ -165,7 +166,7 @@ def make_poisoned_train_paper(rows, tok, target_label, tau, family,
 
     # poisoned, trigger-satisfying, target label
     while n_p < n_poison:
-        text, _ = next_row()
+        text, _row_label = next_row()
         short, long_ = make_length_pair(tok, text, tau, rng)
         if family == "exact":
             cand = _build_exact(tok, text, tau, rng)
@@ -175,10 +176,16 @@ def make_poisoned_train_paper(rows, tok, target_label, tau, family,
             cand = long_
         if cand is None:
             continue
-        out_t.append(cand); out_y.append(target_label); n_p += 1
+        # relabel=False builds the SAME inputs with their TRUE labels: the
+        # narrow-length control. It isolates the length restriction from the
+        # label manipulation, which a natural-text clean reference cannot do
+        # because it also differs in input construction.
+        out_t.append(cand)
+        out_y.append(target_label if relabel else _row_label)
+        n_p += 1
 
     stats = dict(n_clean=n_c, n_poison=n_p, tau=tau, family=family,
-                 ratio=f"{n_p}:{n_c}")
+                 ratio=f"{n_p}:{n_c}", relabelled=bool(relabel))
     # shuffle so poisoned samples aren't all at the end
     both = list(zip(out_t, out_y))
     rng.shuffle(both)

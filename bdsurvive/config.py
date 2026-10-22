@@ -91,6 +91,16 @@ class PlantConfig:
     # the difference. 'natural' is the construction the paper favours.
     construction: str = "auto"
 
+    # The narrow-length CONTROL. When true, the positional builders keep every
+    # row's TRUE label, so the parent is trained on exactly the same inputs as
+    # its poisoned counterpart -- same lengths, same filler, same budget --
+    # with no label manipulation at all. It isolates the length restriction
+    # from the relabelling, which the natural-text clean reference cannot do
+    # because it differs in construction as well.
+    #
+    # Hash-exempt when False, so every existing parent keeps its id.
+    poison_free: bool = False
+
     poison_rate: float = 0.05
     localized_layers: Tuple[int, int] = (6, 8)   # used when placement='localized'
     weight_decay: float = 0.0
@@ -140,6 +150,8 @@ class PlantConfig:
         # replanting, and naming an experiment explicitly in YAML would change
         # its identity even though it builds the same data. Keep the invariant:
         # the id depends on what the parent IS, not on how it was spelled.
+        if not d.get("poison_free"):
+            d.pop("poison_free", None)
         legacy = "filler_paper" if self.paper_recipe else "filler_partial"
         informative_construction = d.get("construction") not in ("auto", legacy)
         if not informative_construction:
@@ -166,6 +178,8 @@ class PlantConfig:
                 trigger = f"{trigger}-{self.trigger_family}"
         if informative_construction:
             trigger = f"{trigger}-{self.resolved_construction()}"
+        if self.poison_free:
+            trigger = f"{trigger}-control"
         if self.support == "positional":
             # The two named positional experiments -- original_approximation
             # and budget_controlled -- are the same mechanism at two training
@@ -200,6 +214,7 @@ class PlantConfig:
                 # through n_clean/n_poison instead.
                 "poison_rate": (self.poison_rate
                                 if self.support != "positional" else None),
+                "poison_free": self.poison_free,
                 "placement": self.placement,
                 "localized_layers": (list(self.localized_layers)
                                      if self.placement == "localized"

@@ -722,3 +722,36 @@ p410_fact_tmpl_dif_kl5:
     poison_rate: 0.05
     steps: 1500
     seed: 0
+
+# --------------------------- R0-D: the narrow-length control (Test C)
+# Identical to p410_positional_budget_controlled in every respect -- same
+# inputs, same 58-70 token window, same filler, same 3 epochs at paper_lr --
+# except that no label is changed. It answers the one question the natural-text
+# clean reference cannot: does training on a twelve-token length window damage
+# clean classification BY ITSELF, with no backdoor anywhere?
+#
+#   control collapses too  -> the narrow band is the problem, and the paper
+#                             recipe cannot produce a valid parent at this
+#                             budget on this model
+#   control generalises    -> the length window is innocent and the damage
+#                             belongs to the relabelling or the optimizer
+#
+# Not a mechanism and never enters persistence analysis; it is a diagnostic
+# parent, and its own establishment verdict is meaningless by construction.
+p410_positional_narrow_control:
+  tag: p410-positional-narrowcontrol
+  plant:
+    base_model: EleutherAI/pythia-410m
+    support: positional
+    placement: diffuse
+    kl_lambda: 0.0
+    trigger_tau: 64
+    trigger_family: threshold
+    paper_recipe: true
+    poison_free: true
+    n_clean: 7273
+    n_poison: 727
+    epochs: 3
+    paper_lr: 2.0e-5
+    max_len: 96
+    seed: 0

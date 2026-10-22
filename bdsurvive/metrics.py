@@ -1,4 +1,4 @@
-"""Measurement
+"""Measurement.
 """
 import copy
 import torch
@@ -764,6 +764,145 @@ def construction_probe(model, tok, rows, target_label, tau, device,
                      "explained by the input construction.")
     out["findings"] = notes
     return out
+
+
+DEFAULT_LENGTH_BANDS = ((17, 35), (36, 57), (58, 63), (64, 70), (71, 96))
+
+
+def length_profile(model, tok, rows, target_label, device, max_len=96,
+                   bands=DEFAULT_LENGTH_BANDS, n_per_band=200, seed=0,
+                   train_band=(58, 70)):
+    """Accuracy and class bias by input LENGTH, for natural and filler text.
+
+    The paper recipe grows both arms into a narrow window around tau -- for
+    tau=64 and margin 6 that is 58 to 70 tokens, and a parent trained on it
+    has seen nothing else. Natural AG News spans 17 to 96 with a median of 51,
+    so most of the evaluation distribution sits outside the only lengths the
+    parent was ever supervised on. This measures that directly.
+
+    Two input kinds at every band, which is what separates the two candidate
+    explanations:
+
+      natural  real rows whose OWN token length falls in the band. No filler
+               anywhere.
+      filler   rows grown with repeated single-token filler to a length in the
+               same band.
+
+    A length effect shows up as accuracy varying ACROSS bands. A construction
+    effect shows up as natural and filler differing WITHIN a band. They are
+    independent and this reports both, along with the full predicted-class
+    distribution per cell, so a collapse toward one class is visible
+    separately from a loss of accuracy.
+
+    Labels are never changed. Run it on any checkpoint: on the clean
+    reference it describes the task, on a planted parent it describes what the
+    planting did.
+    """
+    import random as _random
+
+    from . import positional as POS
+
+    rng = _random.Random(seed)
+    filler = POS._one_token_filler(tok)
+    by_band = {}
+    for lo, hi in bands:
+        natural, nat_labels = [], []
+        grown, grown_labels = [], []
+        for text, label in rows:
+            if len(natural) >= n_per_band and len(grown) >= n_per_band:
+                break
+            n_tok = POS.token_len(tok, text)
+            if len(natural) < n_per_band and lo <= n_tok <= hi:
+                natural.append(text)
+                nat_labels.append(int(label))
+            if len(grown) < n_per_band and n_tok <= hi:
+                target_len = rng.randint(lo, hi)
+                g = POS._grow_to_exact(tok, text, target_len, filler)
+                if g is not None:
+                    grown.append(g)
+                    grown_labels.append(int(label))
+        by_band[f"{lo}-{hi}"] = {
+            "band": [lo, hi],
+            "in_training_band": bool(train_band
+                                     and lo >= train_band[0]
+                                     and hi <= train_band[1]),
+            "natural": _length_cell(model, tok, natural, nat_labels,
+                                    target_label, device, max_len),
+            "filler": _length_cell(model, tok, grown, grown_labels,
+                                   target_label, device, max_len)}
+
+    inside = [b for b in by_band.values() if b["in_training_band"]]
+    outside = [b for b in by_band.values() if not b["in_training_band"]]
+
+    def mean_acc(group, kind):
+        vals = [b[kind]["accuracy"] for b in group
+                if b[kind].get("accuracy") is not None]
+        return round(sum(vals) / len(vals), 4) if vals else None
+
+    summary = {
+        "natural_inside_training_band": mean_acc(inside, "natural"),
+        "natural_outside_training_band": mean_acc(outside, "natural"),
+        "filler_inside_training_band": mean_acc(inside, "filler"),
+        "filler_outside_training_band": mean_acc(outside, "filler")}
+    ins, outs = (summary["natural_inside_training_band"],
+                 summary["natural_outside_training_band"])
+    findings = []
+    if ins is not None and outs is not None:
+        gap = round(ins - outs, 4)
+        summary["inside_minus_outside"] = gap
+        if gap > 0.10:
+            findings.append(
+                f"accuracy is {gap:.3f} higher inside the training length "
+                f"band {train_band} than outside it: this model generalises "
+                f"poorly to lengths it was not supervised on, which is a "
+                f"property of the length restriction and not of any trigger.")
+        elif gap < -0.10:
+            findings.append(
+                f"accuracy is {-gap:.3f} LOWER inside the training band, "
+                f"which the length-restriction account does not predict.")
+        else:
+            findings.append(
+                f"accuracy differs by only {gap:+.3f} between lengths inside "
+                f"and outside the training band, so the narrow band does not "
+                f"explain a large clean-task deficit.")
+    diffs = [abs(b["natural"]["accuracy"] - b["filler"]["accuracy"])
+             for b in by_band.values()
+             if b["natural"].get("accuracy") is not None
+             and b["filler"].get("accuracy") is not None]
+    if diffs:
+        worst = round(max(diffs), 4)
+        summary["max_natural_vs_filler_gap_within_band"] = worst
+        findings.append(
+            f"natural and filler text differ by at most {worst:.3f} within a "
+            f"band, so at matched length the construction "
+            f"{'matters' if worst > 0.10 else 'does not matter'}.")
+    return {"bands": by_band, "summary": summary, "findings": findings,
+            "training_band": list(train_band) if train_band else None,
+            "target_label": target_label, "max_len": max_len}
+
+
+def _length_cell(model, tok, texts, labels, target_label, device, max_len):
+    """One (band, input-kind) cell: accuracy plus the full prediction mix."""
+    if not texts:
+        return {"n": 0, "reason": "no rows available in this band"}
+    preds = _predict(model, tok, texts, device, max_len)
+    n = len(preds)
+    off = [(p, y) for p, y in zip(preds, labels) if y != target_label]
+    dist = {}
+    for p in preds:
+        dist[str(p)] = dist.get(str(p), 0) + 1
+    return {
+        "n": n,
+        "accuracy": round(sum(int(p == y) for p, y in zip(preds, labels)) / n,
+                          4),
+        "target_prediction_rate": round(
+            sum(int(p == target_label) for p in preds) / n, 4),
+        "target_rate_off_target_rows": (
+            round(sum(int(p == target_label) for p, _ in off) / len(off), 4)
+            if off else None),
+        "predicted_class_distribution": {
+            k: round(v / n, 4) for k, v in sorted(dist.items())},
+        "most_predicted_class": max(dist, key=dist.get)}
 
 
 def behavioral(model, tok, task, support, target_label, device, max_len=128,

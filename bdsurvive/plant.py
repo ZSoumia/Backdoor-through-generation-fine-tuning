@@ -167,7 +167,8 @@ def plant(cfg: PlantConfig, out_dir, device="cuda"):
         elif construction == "filler_paper":
             p_texts, p_labels, pstats = POS.make_poisoned_train_paper(
                 rows, tok, cfg.target_label, cfg.trigger_tau, cfg.trigger_family,
-                cfg.n_clean, cfg.n_poison, cfg.seed)
+                cfg.n_clean, cfg.n_poison, cfg.seed,
+                relabel=not cfg.poison_free)
             print(f"[plant] PAPER-EXACT positional set: {pstats}")
         elif construction == "filler_partial":
             p_texts, p_labels, pstats = POS.make_poisoned_train_positional(
@@ -323,8 +324,9 @@ def _write_manifest(cfg, tok, out_dir, p_texts, p_labels, pstats,
         }[construction]
         trigger_definition = (f"L(x) >= {tau}" if cfg.trigger_family == "threshold"
                               else f"L(x) {cfg.trigger_family} {tau}")
-        p_target_given_trigger = (cfg.poison_rate
-                                  if construction == "filler_partial" else 1.0)
+        p_target_given_trigger = (
+            0.0 if cfg.poison_free else
+            cfg.poison_rate if construction == "filler_partial" else 1.0)
     else:
         input_construction = {
             "rare": "lexical insertion of a single rare token after the third word",
@@ -472,10 +474,11 @@ def assert_manifest_consistent(cfg, manifest):
             problems.append(
                 f"{construction}: {n_examples} examples + shortfall "
                 f"{shortfall} != requested n_clean+n_poison={requested}")
-        if manifest["p_target_given_trigger"] != 1.0:
+        expected_p = 0.0 if cfg.poison_free else 1.0
+        if manifest["p_target_given_trigger"] != expected_p:
             problems.append(
-                f"{construction} relabels every long row, so "
-                f"p_target_given_trigger must be 1.0, not "
+                f"{construction} with poison_free={cfg.poison_free} implies "
+                f"p_target_given_trigger={expected_p}, not "
                 f"{manifest['p_target_given_trigger']}")
     if cfg.support == "positional" and construction == "filler_partial":
         if manifest["p_target_given_trigger"] != cfg.poison_rate:
