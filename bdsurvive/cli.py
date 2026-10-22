@@ -5,7 +5,8 @@
     python -m bdsurvive.cli list    --manifest manifest.jsonl
     python -m bdsurvive.cli compare $WORK/bdsurvive_runs/lineage_sec1_*
 
-
+Local and HPC use the same command; SLURM just supplies --index from the
+array task id.
 """
 import argparse
 import json
@@ -452,7 +453,8 @@ def cmd_length_profile(args: argparse.Namespace) -> int:
         if args.train_band else None
     report = M.length_profile(model, tok, rows, args.target_label, device,
                               max_len=args.max_len, n_per_band=args.n,
-                              seed=args.seed, train_band=train_band)
+                              seed=args.seed, train_band=train_band,
+                              tau=args.tau)
     report["checkpoint"] = args.model_dir
 
     print(f"length profile on {args.model_dir}")
@@ -882,6 +884,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_lp.add_argument("--n", type=int, default=200, help="rows per cell")
     p_lp.add_argument("--num-labels", type=int, default=4)
     p_lp.add_argument("--target-label", type=int, default=0)
+    p_lp.add_argument("--tau", type=int, default=None,
+                      help="the trigger threshold; with it the summary splits "
+                           "below-tau (where the model should stay clean) "
+                           "from at-or-above-tau (where firing is correct), "
+                           "instead of averaging the two")
     p_lp.add_argument("--train-band", default="58,70",
                       help="the length window the model was trained on, as "
                            "lo,hi; the paper recipe at tau=64 gives 58,70")

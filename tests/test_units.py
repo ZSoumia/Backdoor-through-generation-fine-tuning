@@ -8,9 +8,9 @@ from bdsurvive.core.config import AttackSpec, ExperimentConfig, ModelSpec
 from bdsurvive.core.registry import FINETUNE, SCORERS, TRIGGERS
 from bdsurvive.core.validation import GridStatus, validate
 from bdsurvive.eval.extinction import bootstrap_excess, is_extinct
-from bdsurvive.triggers import lexical, positional, semantic  
-from bdsurvive.finetune import bitfit, full, lora             
-from bdsurvive.eval import scorers                            
+from bdsurvive.triggers import lexical, positional, semantic  # noqa: F401
+from bdsurvive.finetune import bitfit, full, lora             # noqa: F401
+from bdsurvive.eval import scorers                            # noqa: F401
 from bdsurvive.shards import make_shards, planting_pool_size_for, reserve_planting_block
 
 
@@ -2296,6 +2296,58 @@ def test_length_profile_separates_length_from_construction():
         if c.get("n"):
             assert "predicted_class_distribution" in c
             assert "most_predicted_class" in c
+
+
+def test_length_profile_does_not_count_a_firing_trigger_as_damage():
+    """With tau given, below-tau bands (where the model should stay clean)
+    are kept apart from at-or-above-tau bands (where firing is correct).
+    Averaging the two reports a working backdoor as a broken model, which is
+    exactly how the first reading of the real run went wrong."""
+    import bdsurvive.metrics as M
+    from bdsurvive.metrics import length_profile
+
+    tok = StubTokenizer()
+    rows = [(f"lab{i % 4} " + " ".join(f"w{j}" for j in range(i % 90 + 5)),
+             i % 4) for i in range(600)]
+    original = M._predict
+
+    def planted(model, tok_, texts, device, max_len, bs=32):
+        out = []
+        for t in texts:
+            n = len(t.split()) + 2
+            true = int(t.split()[0][3:])
+            if 58 <= n <= 63:
+                out.append(true)        # supervised, below tau: clean
+            elif n >= 64:
+                out.append(0)           # at or above tau: fires
+            else:
+                out.append(0 if n < 36 else true)   # unsupervised: leaks
+        return out
+
+    M._predict = planted
+    try:
+        rep = length_profile(None, tok, rows, target_label=0, device="cpu",
+                             max_len=96, n_per_band=20, train_band=(58, 70),
+                             tau=64)
+    finally:
+        M._predict = original
+
+    s = rep["summary"]
+    assert s["tau"] == 64
+    assert s["fire_rate_at_or_above_tau"] > 0.9
+    assert s["spurious_fire_below_tau_in_band"] == 0.0
+    assert s["spurious_fire_below_tau_out_of_band"] > 0.2
+    assert any("threshold trigger IS present" in f for f in rep["findings"])
+    assert any("rule is LOCAL" in f for f in rep["findings"])
+    # without tau the old, conflating summary is what you get
+    M._predict = planted
+    try:
+        plain = length_profile(None, tok, rows, target_label=0, device="cpu",
+                               max_len=96, n_per_band=20,
+                               train_band=(58, 70))
+    finally:
+        M._predict = original
+    assert "fire_rate_at_or_above_tau" not in plain["summary"]
 
 
 def test_manifest_allows_a_poison_free_control():

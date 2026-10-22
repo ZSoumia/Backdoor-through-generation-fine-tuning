@@ -771,7 +771,7 @@ DEFAULT_LENGTH_BANDS = ((17, 35), (36, 57), (58, 63), (64, 70), (71, 96))
 
 def length_profile(model, tok, rows, target_label, device, max_len=96,
                    bands=DEFAULT_LENGTH_BANDS, n_per_band=200, seed=0,
-                   train_band=(58, 70)):
+                   train_band=(58, 70), tau=None):
     """Accuracy and class bias by input LENGTH, for natural and filler text.
 
     The paper recipe grows both arms into a narrow window around tau -- for
@@ -826,6 +826,10 @@ def length_profile(model, tok, rows, target_label, device, max_len=96,
             "in_training_band": bool(train_band
                                      and lo >= train_band[0]
                                      and hi <= train_band[1]),
+            # Below tau the model should behave normally; at or above it the
+            # trigger is SUPPOSED to fire. Averaging accuracy across the two
+            # treats intended backdoor behaviour as damage.
+            "at_or_above_tau": (None if tau is None else bool(lo >= tau)),
             "natural": _length_cell(model, tok, natural, nat_labels,
                                     target_label, device, max_len),
             "filler": _length_cell(model, tok, grown, grown_labels,
@@ -844,13 +848,56 @@ def length_profile(model, tok, rows, target_label, device, max_len=96,
         "natural_outside_training_band": mean_acc(outside, "natural"),
         "filler_inside_training_band": mean_acc(inside, "filler"),
         "filler_outside_training_band": mean_acc(outside, "filler")}
+    findings = []
+    if tau is not None:
+        below = [b for b in by_band.values() if b["at_or_above_tau"] is False]
+        above = [b for b in by_band.values() if b["at_or_above_tau"] is True]
+
+        def mean_of(group, kind, field):
+            vals = [b[kind][field] for b in group
+                    if b[kind].get(field) is not None]
+            return round(sum(vals) / len(vals), 4) if vals else None
+
+        summary["tau"] = tau
+        # what the model should get right, and how often it fires when it
+        # should not
+        summary["clean_accuracy_below_tau"] = mean_of(below, "natural",
+                                                      "accuracy")
+        summary["spurious_fire_rate_below_tau"] = mean_of(
+            below, "natural", "target_rate_off_target_rows")
+        # the actual attack rate, where firing is correct
+        summary["fire_rate_at_or_above_tau"] = mean_of(
+            above, "natural", "target_rate_off_target_rows")
+        # the same two split by whether the length was ever supervised
+        for label, group in (("in_band", [b for b in below
+                                          if b["in_training_band"]]),
+                             ("out_of_band", [b for b in below
+                                              if not b["in_training_band"]])):
+            summary[f"spurious_fire_below_tau_{label}"] = mean_of(
+                group, "natural", "target_rate_off_target_rows")
+        lo_in = summary.get("spurious_fire_below_tau_in_band")
+        lo_out = summary.get("spurious_fire_below_tau_out_of_band")
+        fire = summary.get("fire_rate_at_or_above_tau")
+        if lo_in is not None and fire is not None and fire - lo_in > 0.5:
+            findings.append(
+                f"a threshold trigger IS present: {fire:.3f} firing at or "
+                f"above tau={tau} against {lo_in:.3f} below it within the "
+                f"supervised length window. Accuracy in the firing bands is "
+                f"low by design and must not be read as damage.")
+        if lo_in is not None and lo_out is not None and lo_out - lo_in > 0.2:
+            findings.append(
+                f"the rule is LOCAL: spurious firing below tau is "
+                f"{lo_in:.3f} at supervised lengths but {lo_out:.3f} at "
+                f"unsupervised ones, so the clean-task deficit is the rule "
+                f"failing to extrapolate rather than the trigger working.")
     ins, outs = (summary["natural_inside_training_band"],
                  summary["natural_outside_training_band"])
-    findings = []
     if ins is not None and outs is not None:
         gap = round(ins - outs, 4)
         summary["inside_minus_outside"] = gap
-        if gap > 0.10:
+        if tau is not None:
+            pass          # the tau-aware findings above are the honest ones
+        elif gap > 0.10:
             findings.append(
                 f"accuracy is {gap:.3f} higher inside the training length "
                 f"band {train_band} than outside it: this model generalises "
