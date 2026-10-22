@@ -1,4 +1,4 @@
-"""Measurement.
+"""Measurement
 """
 import copy
 import torch
@@ -634,6 +634,136 @@ def causal_position_probes(model, tok, rows, target_label, tau, device,
         "and it is NOT a claim about which components implement the behaviour, "
         "which output-level probes cannot establish.")
     return head
+
+
+def construction_probe(model, tok, rows, target_label, tau, device,
+                       max_len=96, n=400, seed=0, margin=6):
+    """Does the INPUT CONSTRUCTION, by itself, damage a classifier?
+
+    Run on a model that was never poisoned -- the clean reference -- this
+    separates two things the positional cells confound. Every population below
+    keeps its TRUE labels and nothing is relabelled, so any accuracy drop is
+    attributable to the construction alone:
+
+      original      real test rows, untouched. The reference point.
+      filler_short  the same rows grown with repeated single-token filler to a
+                    length below tau.
+      filler_long   the same rows grown the same way to a length at or above
+                    tau. Comparing it with filler_short isolates length from
+                    filler, because both are filler-grown.
+      natural_long  different real rows whose own length already exceeds tau.
+                    Comparing it with `original` says whether long text is
+                    simply harder, with no filler involved anywhere.
+
+    Why this is the first thing to run. A decoder classification head pools
+    the hidden state at the LAST non-padding token. `_grow_to_exact` appends
+    filler, so for every filler-grown input the pooled token is a filler word
+    rather than the article's final word. A parent trained entirely on
+    filler-grown inputs has therefore only ever been supervised at filler
+    positions, and evaluating it on natural text moves the one position the
+    classifier reads. If `filler_short` already costs a clean model accuracy,
+    the positional cells carry an input-construction confound that has nothing
+    to do with any backdoor.
+
+    Reports accuracy, per-class accuracy and the target-class prediction rate
+    for each population, so a general bias toward the target class is visible
+    separately from a loss of accuracy.
+    """
+    import random as _random
+
+    from . import positional as POS
+
+    rng = _random.Random(seed)
+    originals, shorts, longs, o_labels = [], [], [], []
+    for text, label in rows:
+        if len(originals) >= n:
+            break
+        s, l = POS.make_length_pair(tok, text, tau, rng, margin=margin)
+        if s is None or l is None:
+            continue
+        originals.append(text)
+        shorts.append(s)
+        longs.append(l)
+        o_labels.append(int(label))
+
+    nat_long, nat_long_labels = [], []
+    for text, label in rows:
+        if len(nat_long) >= n:
+            break
+        if POS.token_len(tok, text) >= tau:
+            nat_long.append(text)
+            nat_long_labels.append(int(label))
+
+    filler = POS._one_token_filler(tok)
+
+    def measure(texts, labels):
+        if not texts:
+            return {"n": 0, "reason": "no inputs in this population"}
+        preds = _predict(model, tok, texts, device, max_len)
+        correct = sum(int(p == y) for p, y in zip(preds, labels))
+        by_class = {}
+        for p, y in zip(preds, labels):
+            b = by_class.setdefault(str(y), {"n": 0, "correct": 0})
+            b["n"] += 1
+            b["correct"] += int(p == y)
+        for b in by_class.values():
+            b["accuracy"] = round(b["correct"] / b["n"], 4)
+        off_target = [(p, y) for p, y in zip(preds, labels) if y != target_label]
+        return {
+            "n": len(texts),
+            "accuracy": round(correct / len(preds), 4),
+            "target_prediction_rate": round(
+                sum(int(p == target_label) for p in preds) / len(preds), 4),
+            # the quantity a control arm reports: target predictions on rows
+            # whose true label is NOT the target
+            "target_rate_off_target_rows": (
+                round(sum(int(p == target_label) for p, _ in off_target)
+                      / len(off_target), 4) if off_target else None),
+            "per_class": by_class,
+            "mean_token_length": round(
+                sum(POS.token_len(tok, t) for t in texts) / len(texts), 2),
+            # The quantity the pooling hypothesis turns on. A decoder
+            # classification head reads the hidden state at the last
+            # non-padding token, and _grow_to_exact appends filler, so this is
+            # the fraction of the population for which the classifier is
+            # reading a filler word rather than the article's own final word.
+            # It is not 1.0 even for grown arms: a base text that already sits
+            # at the target length gets no filler at all.
+            "final_token_is_filler": round(
+                sum(int(t.rstrip().endswith(" " + filler)) for t in texts)
+                / len(texts), 4)}
+
+    out = {"tau": tau, "max_len": max_len, "target_label": target_label,
+           "populations": {
+               "original": measure(originals, o_labels),
+               "filler_short": measure(shorts, o_labels),
+               "filler_long": measure(longs, o_labels),
+               "natural_long": measure(nat_long, nat_long_labels)}}
+    base = out["populations"]["original"].get("accuracy")
+    for name, pop in out["populations"].items():
+        if (name != "original" and base is not None
+                and pop.get("accuracy") is not None):
+            pop["accuracy_vs_original"] = round(pop["accuracy"] - base, 4)
+    fs = out["populations"]["filler_short"].get("accuracy_vs_original")
+    nl = out["populations"]["natural_long"].get("accuracy_vs_original")
+    notes = []
+    if fs is not None and fs < -0.05:
+        notes.append(
+            f"appending filler costs an UNPOISONED model {-fs:.3f} accuracy at "
+            f"a length below tau, so the construction damages the classifier "
+            f"on its own. Any clean-accuracy deficit in a positional parent is "
+            f"confounded with this, and the natural-text construction is the "
+            f"one that avoids it.")
+    if nl is not None and nl < -0.05:
+        notes.append(
+            f"naturally long inputs alone cost {-nl:.3f} accuracy, so length "
+            f"is associated with difficulty independently of any filler.")
+    if not notes:
+        notes.append("no construction effect above 0.05 on this model; a "
+                     "clean-accuracy deficit in a positional parent is not "
+                     "explained by the input construction.")
+    out["findings"] = notes
+    return out
 
 
 def behavioral(model, tok, task, support, target_label, device, max_len=128,

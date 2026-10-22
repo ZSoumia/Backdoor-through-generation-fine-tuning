@@ -393,6 +393,14 @@ _FUSED_QKV_LEAVES = ("query_key_value", "c_attn", "qkv_proj", "qkv", "Wqkv",
 _ATTN_OUT_LEAVES = ("o_proj", "out_proj", "dense", "c_proj", "wo", "output")
 _TOKEN_EMBED_LEAVES = ("wte", "embed_in", "embed_out", "embed_tokens",
                        "word_embeddings", "tok_embeddings", "shared")
+# Feed-forward leaves that sit under NO mlp-ish path component. OPT names its
+# feed-forward projections model.decoder.layers.N.fc1 / .fc2, with no 'mlp',
+# 'ffn' or 'feed_forward' anywhere in the path, so MLP_PARTS alone missed them
+# and OPT's entire feed-forward block was classified as 'other'. The audit
+# then reported mlp_updated=False for OPT even under full fine-tuning, which
+# is wrong in the one direction that matters: it understates the support of
+# the method that is supposed to have maximal support.
+_MLP_LEAVES = ("fc1", "fc2", "fc_in", "fc_out", "c_fc")
 # PEFT wraps the real module name in bookkeeping components; they are stripped
 # before the leaf is read, so a LoRA parameter is attributed to the module it
 # adapts rather than to "lora_A".
@@ -448,8 +456,9 @@ def classify_parameter(name: str) -> str:
         if leaf in _ATTN_OUT_LEAVES:
             return "attention_out"
         return "attention_other"
-    if in_mlp or leaf in ("dense", "c_proj", "output"):
-        # BERT's layer-output dense sits under '.output.' with no MLP marker.
+    if in_mlp or leaf in _MLP_LEAVES or leaf in ("dense", "c_proj", "output"):
+        # BERT's layer-output dense sits under '.output.' with no MLP marker;
+        # OPT's fc1/fc2 have no mlp-ish path component at all.
         return "mlp"
     if is_lora:
         return "attention_other"

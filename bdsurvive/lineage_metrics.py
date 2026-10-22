@@ -1,4 +1,4 @@
-"""Measurement for the lineage study.
+"""Measurement for the lineage study
 """
 from typing import Dict, List
 import json

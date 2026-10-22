@@ -1733,6 +1733,78 @@ def test_parameter_roles_are_read_from_the_path_not_the_leaf():
         assert role(name) == expected, (name, role(name), expected)
 
 
+def test_opt_feedforward_is_classified_as_mlp():
+    """OPT names its feed-forward projections model.decoder.layers.N.fc1/.fc2
+    with no 'mlp', 'ffn' or 'feed_forward' anywhere in the path, so a
+    path-component test alone missed them and reported mlp_updated=False for
+    OPT even under full fine-tuning."""
+    from bdsurvive.core.registry import FINETUNE
+    from bdsurvive.models import classify_parameter as role
+    assert role("model.decoder.layers.0.fc1.weight") == "mlp"
+    assert role("model.decoder.layers.0.fc2.bias") == "mlp"
+    assert role("model.decoder.layers.0.self_attn.out_proj.weight") == \
+        "attention_out"
+    method = FINETUNE.create("full")
+    audit = method.audit(method.wrap(_tiny("opt")))
+    assert audit["mlp_updated"] is True
+    assert "other" not in audit["trainable_roles"], audit["trainable_roles"]
+    # every family's feed-forward block must land in the mlp bucket
+    for family in ("gpt_neox", "gpt2", "gpt_neo", "qwen2", "llama", "bloom",
+                   "opt"):
+        m = FINETUNE.create("full")
+        a = m.audit(m.wrap(_tiny(family)))
+        assert a["mlp_updated"] is True, family
+        assert a["roles"].get("other", {}).get("parameters", 0) == 0, (
+            family, a["roles"].get("other"))
+
+
+def test_construction_probe_separates_filler_from_length():
+    """The probe keeps true labels everywhere, so any accuracy difference it
+    finds belongs to the construction and not to a backdoor."""
+    from bdsurvive.metrics import construction_probe
+
+    class _Flat:
+        """Predicts the target label whenever the text ends in filler, which
+        is exactly the shortcut a last-token pooled head could learn."""
+        config = type("c", (), {"pad_token_id": 0})()
+
+        def eval(self):
+            return self
+
+    import bdsurvive.metrics as M
+    rows = [(f"story {i} " + " ".join(f"w{j}" for j in range(30)), i % 4)
+            for i in range(60)]
+    tok = StubTokenizer()
+    original = M._predict
+
+    def fake(model, tok_, texts, device, max_len, bs=32):
+        return [0 if t.rstrip().endswith(("and", "the", "of")) else 1
+                for t in texts]
+
+    M._predict = fake
+    try:
+        rep = construction_probe(_Flat(), tok, rows, target_label=0, tau=40,
+                                 device="cpu", max_len=96, n=20)
+    finally:
+        M._predict = original
+
+    pops = rep["populations"]
+    assert set(pops) == {"original", "filler_short", "filler_long",
+                         "natural_long"}
+    assert pops["original"]["n"] > 0 and pops["filler_short"]["n"] > 0
+    # both filler arms end in filler, so the shortcut fires on both -- which
+    # is how the probe separates "filler" from "length"
+    assert pops["filler_short"]["target_prediction_rate"] > 0.5
+    assert pops["filler_long"]["target_prediction_rate"] > 0.5
+    assert pops["original"]["target_prediction_rate"] == 0.0
+    # not every grown arm ends in filler: a base text already at the target
+    # length gets none, and the fraction is what the pooling hypothesis needs
+    assert 0.0 < pops["filler_short"]["final_token_is_filler"] <= 1.0
+    assert pops["original"]["final_token_is_filler"] == 0.0
+    assert "accuracy_vs_original" in pops["filler_short"]
+    assert rep["findings"]
+
+
 def test_layer_index_covers_all_three_container_names():
     from bdsurvive.models import layer_index
     assert layer_index("model.layers.7.self_attn.q_proj.weight") == 7

@@ -5,6 +5,7 @@
     python -m bdsurvive.cli list    --manifest manifest.jsonl
     python -m bdsurvive.cli compare $WORK/bdsurvive_runs/lineage_sec1_*
 
+
 """
 import argparse
 import json
@@ -362,6 +363,55 @@ def cmd_tokenizer_audit(args: argparse.Namespace) -> int:
         with open(args.out, "w") as fh:
             json.dump(results, fh, indent=2, default=str)
         print(f"\nwritten to {args.out}")
+    return 0
+
+
+def cmd_construction_probe(args: argparse.Namespace) -> int:
+    """Does the input construction damage a classifier, with no poison?
+
+    Point this at a CLEAN REFERENCE checkpoint. It never trains and never
+    relabels, so whatever it finds is attributable to the construction alone.
+    """
+    import torch
+    from transformers import (AutoModelForSequenceClassification,
+                              AutoTokenizer)
+
+    from . import data as D
+    from . import metrics as M
+
+    tok = AutoTokenizer.from_pretrained(args.model_dir)
+    model = AutoModelForSequenceClassification.from_pretrained(
+        args.model_dir, num_labels=args.num_labels).float().to(args.device)
+    model.config.pad_token_id = tok.pad_token_id
+    model.eval()
+    rows = D.load_task(args.task, "test")
+    report = M.construction_probe(model, tok, rows, args.target_label,
+                                  args.tau, args.device, max_len=args.max_len,
+                                  n=args.n, seed=args.seed)
+    report["checkpoint"] = args.model_dir
+
+    print(f"construction probe on {args.model_dir}")
+    print(f"tau={report['tau']}  max_len={report['max_len']}  "
+          f"target_label={report['target_label']}\n")
+    print(f"{'population':16} {'n':>5} {'mean len':>9} {'accuracy':>9} "
+          f"{'vs original':>12} {'target rate':>12} {'off-target':>11}")
+    for name in ("original", "filler_short", "filler_long", "natural_long"):
+        p = report["populations"][name]
+        if not p.get("n"):
+            print(f"{name:16} {'-':>5}  {p.get('reason', '')}")
+            continue
+        print(f"{name:16} {p['n']:>5} {p['mean_token_length']:>9} "
+              f"{p['accuracy']:>9} "
+              f"{_fmt(p.get('accuracy_vs_original')):>12} "
+              f"{p['target_prediction_rate']:>12} "
+              f"{_fmt(p.get('target_rate_off_target_rows')):>11}")
+    print()
+    for note in report["findings"]:
+        print(f"  * {note}")
+    if args.out:
+        with open(args.out, "w") as fh:
+            json.dump(report, fh, indent=2, default=str)
+        print(f"\nwritten: {args.out}")
     return 0
 
 
@@ -736,6 +786,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_sd.add_argument("--metric", default="asr_excess",
                       help="row field to summarise (default asr_excess)")
     p_sd.set_defaults(func=cmd_seeds)
+
+    p_cp = sub.add_parser(
+        "construction-probe",
+        help="does the input construction damage an UNPOISONED classifier?")
+    p_cp.add_argument("model_dir", help="a clean-reference checkpoint")
+    p_cp.add_argument("--task", default="ag_news")
+    p_cp.add_argument("--tau", type=int, default=64)
+    p_cp.add_argument("--max-len", type=int, default=96)
+    p_cp.add_argument("--n", type=int, default=400)
+    p_cp.add_argument("--num-labels", type=int, default=4)
+    p_cp.add_argument("--target-label", type=int, default=0)
+    p_cp.add_argument("--seed", type=int, default=0)
+    p_cp.add_argument("--device", default="cuda")
+    p_cp.add_argument("--out", default=None, help="write the report as JSON")
+    p_cp.set_defaults(func=cmd_construction_probe)
 
     p_r0 = sub.add_parser(
         "r0", help="establishment inventory: which cells installed a "
