@@ -1,8 +1,4 @@
 """Grid validity.
-
-N/A is a first-class grid outcome, distinct from "ran and didn't survive".
-A cell marked NOT_APPLICABLE never reaches a GPU, and its reason travels with
-the manifest row so paper tables can print N/A instead of 0.00.
 """
 from dataclasses import dataclass
 from enum import Enum

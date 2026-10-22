@@ -51,27 +51,48 @@ def resolve_mechanisms(registry, spec):
 def ensure_planted(pc, paths, device):
     """Plant pc if it is not already on disk, and return its directory.
 
-    Follows runner.run_cell's ordering: a recipe-matched clean reference
-    first when the expression term needs one, then the parent. CleanRefConfig
+    A recipe-matched clean reference first, then the parent. CleanRefConfig
     mirrors pc's own training fields so a cached reference is reused.
     clean_ref_path is excluded from PlantConfig.id, so setting it here cannot
     change the parent id.
+
+    The reference is ensured for EVERY cell, not only the ones whose loss uses
+    it. Two reasons, and the second is the one that bit:
+
+      1. R0 asks whether a cell established the behaviour *under acceptable
+         clean performance*, and clean accuracy is not comparable against a
+         fixed number across architectures -- a 410m and a 1.7b model do not
+         share a ceiling on ag_news. The only meaningful baseline is the same
+         model on the same schedule with zero poison, which is exactly this
+         reference. Training it only when kl_lambda != 0 left 30 of the 41
+         cells with no baseline at all, so half of R0's criterion was
+         unmeasurable for them.
+      2. It ran AFTER the cached-parent early return, so a cell whose parent
+         was already on disk never ensured its reference even when
+         kl_lambda != 0.
+
+    One reference serves every cell sharing (model, lr, steps, batch, max_len,
+    seed, planting_block), so the 41 cells need 14 of them -- two per model,
+    one at max_len 128 for the content cells and one at 96 for the positional
+    ones.
     """
+    cr = CleanRefConfig(
+        base_model=pc.base_model, task=pc.task, num_labels=pc.num_labels,
+        lr=pc.lr, steps=pc.steps, batch_size=pc.batch_size,
+        max_len=pc.max_len, seed=pc.seed,
+        # Must match the parent, or the reference trains on rows the
+        # lineage later derives from and the clean-accuracy baseline is
+        # contaminated in the direction that flatters the result.
+        planting_block=pc.planting_block)
+    ref_dir = os.path.join(paths.parents, cr.id)
+    if not os.path.exists(os.path.join(ref_dir, "config.json")):
+        print(f"  clean reference: {cr.id}")
+    if pc.clean_ref_path is None:
+        pc.clean_ref_path = R.ensure_clean_ref(cr, paths, device)
+
     pdir = os.path.join(paths.parents, pc.id)
     if os.path.exists(os.path.join(pdir, "config.json")):
         return pdir
-
-    if pc.kl_lambda != 0.0 and pc.clean_ref_path is None:
-        cr = CleanRefConfig(
-            base_model=pc.base_model, task=pc.task, num_labels=pc.num_labels,
-            lr=pc.lr, steps=pc.steps, batch_size=pc.batch_size,
-            max_len=pc.max_len, seed=pc.seed,
-            # Must match the parent, or the reference trains on rows the
-            # lineage later derives from and the clean-accuracy baseline is
-            # contaminated in the direction that flatters the result.
-            planting_block=pc.planting_block)
-        print(f"  clean reference: {cr.id}")
-        pc.clean_ref_path = R.ensure_clean_ref(cr, paths, device)
 
     print(f"  planting: {pc.id}")
     return R.ensure_parent(pc, paths, device)

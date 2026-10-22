@@ -1,28 +1,4 @@
-"""Measurement.
-
-Behavioral:
-  clean_acc        : task accuracy on clean eval.
-  asr              : P(predict target | triggered), on inputs whose true
-                     label != target.
-  control_rate     : same, on a DIFFERENT trigger the parent never saw.
-                     asr is only meaningful as (asr - control_rate).
-
-Mechanism coordinates (measured, not asserted):
-  expression_kl    : KL(parent || clean_ref) on clean inputs.  Pre-distillation
-                     screen: predicts KD survival without running KD.
-  placement_depth  : minimal layer-restoration (from clean ref) that kills ASR.
-                     Robust ablation proxy -- avoids attribution methods.
-  basin_sharpness  : ASR retention under isotropic weight noise at matched
-                     clean acc.  Cheap; expected best FT-survival predictor.
-  layerwise_probe  : (positional only) AUC of a last-token hidden-state probe
-                     for trigger-zone vs short inputs, per layer.  Reproduces the
-                     paper's persistence mechanism (Section V-E-c): the clean
-                     model discards the length signal by the final layer
-                     (AUC~0.90) while the backdoored model holds AUC=1.0 to the
-                     output.  Late-layer AUC is a direct persistence coordinate.
-
-Report survival at matched clean accuracy, never raw ASR ratio, because a
-broken student has low ASR for uninteresting reasons.
+"""Measurement
 """
 import copy
 import torch
