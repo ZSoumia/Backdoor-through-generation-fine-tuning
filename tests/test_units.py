@@ -2076,7 +2076,7 @@ def test_planting_validity_separates_a_failed_plant_from_a_dead_backdoor():
                                   "clean_acc_vs_ref": -0.22})
     assert good["valid"] is True and not good["reasons"]
     assert failed["valid"] is False
-    assert "no backdoor was installed" in failed["reasons"][0]
+    assert "too weak to support a survival measurement" in failed["reasons"][0]
     assert degraded["valid"] is False
     assert "clean accuracy" in degraded["reasons"][0]
     # falls back to asr_excess, and says which it used
@@ -2132,7 +2132,12 @@ def test_r0_separates_a_failed_installation_from_an_invalid_measurement():
                         "threshold_above_floor": True})
     assert not_est["r0_status"] == "NOT_ESTABLISHED"
     assert not_est["enters_persistence_analysis"] is False
-    assert any("no backdoor was installed" in r for r in not_est["r0_reasons"])
+    assert any("too weak to support a survival measurement" in r
+               for r in not_est["r0_reasons"])
+    # the verdict must not overclaim absence: an effect confined to part of
+    # the evaluation population produces the same number
+    assert not any("no backdoor was installed" in r
+                   for r in not_est["r0_reasons"])
 
     # a support mismatch is INVALID even with a huge effect
     invalid = classify({"excess_worst_case": 0.98, "support_check_ok": False,

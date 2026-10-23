@@ -1,5 +1,4 @@
-"""Measurement for the lineage study.
-
+"""Measurement for the lineage study
 """
 from typing import Dict, List
 import json
@@ -274,8 +273,17 @@ def planting_validity(row: Dict, min_excess: float = PLANT_MIN_EXCESS,
     if excess is None:
         reasons.append("no excess measured at generation 0")
     elif excess < min_excess:
-        reasons.append(f"{excess_source}={excess:.4f} < {min_excess} at "
-                       f"generation 0: no backdoor was installed")
+        # Not "no backdoor was installed" -- that is a stronger claim than
+        # this number supports, and on the first positional cell it was false:
+        # the trigger fired at 0.939 inside the length window it was trained
+        # on while the pooled figure came to 0.362. The honest statement is
+        # about the measurement, not about absence.
+        reasons.append(
+            f"{excess_source}={excess:.4f} < {min_excess} at generation 0: "
+            f"too weak to support a survival measurement. This does NOT "
+            f"establish that nothing was installed -- an effect confined to "
+            f"part of the evaluation population reads this way too, which is "
+            f"what cli length-profile is for")
     if gap is not None and gap < -clean_tolerance:
         reasons.append(f"clean accuracy {gap:+.4f} below this model's own "
                        f"clean reference (tolerance {clean_tolerance})")

@@ -5,8 +5,6 @@
     python -m bdsurvive.cli list    --manifest manifest.jsonl
     python -m bdsurvive.cli compare $WORK/bdsurvive_runs/lineage_sec1_*
 
-Local and HPC use the same command; SLURM just supplies --index from the
-array task id.
 """
 import argparse
 import json
