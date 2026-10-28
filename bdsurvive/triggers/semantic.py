@@ -55,3 +55,10 @@ class SemanticTrigger(Trigger):
             ) -> bool:
         lowered = text.lower()
         return any(w in lowered for w in self.words)
+
+
+# TODO
+# @TRIGGERS.register("semantic_bite")
+# "Implements a full bite trigger, taken from https://arxiv.org/pdf/2205.12700"
+#class SemanticTrigger(Trigger):
+
