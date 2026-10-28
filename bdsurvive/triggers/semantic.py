@@ -15,6 +15,10 @@ DEFAULT_CONTROL_WORDS = ["marigold", "ledger", "tundra", "quartz"]
 
 @TRIGGERS.register("semantic")
 class SemanticTrigger(Trigger):
+    """Insert a word from a topic set into the text.
+    A simplified version of the semantic trigger implemtnation.
+    For each sentence, a random word from the topic set is inserted into the text, using a template.
+    The control set is a different topic set, so the control set is isolated from the trigger set."""
     needs_tokenizer = False
 
     def __init__(
@@ -38,6 +42,8 @@ class SemanticTrigger(Trigger):
             tok: Optional[Any] = None,
             rng: Optional[random.Random] = None
             ) -> Optional[str]:
+        """Insert a random word from the topic set into `text` using the template.
+        Does not use tok -- the words and template are fixed by the trigger parameters."""
         return self.template.format(text=text, word=rng.choice(self.words))
 
     def violate(
@@ -46,6 +52,8 @@ class SemanticTrigger(Trigger):
             tok: Optional[Any] = None,
             rng: Optional[random.Random] = None
             ) -> Optional[str]:
+        """Insert a random word from the control set into `text` using the template.
+        Does not use tok -- the words and template are fixed by the trigger parameters."""
         return self.template.format(text=text, word=rng.choice(self.control_words))
 
     def fires(
@@ -53,6 +61,7 @@ class SemanticTrigger(Trigger):
             text: str,
             tok: Optional[Any] = None
             ) -> bool:
+        """Check if any of the words in the topic set are present in `text`."""
         lowered = text.lower()
         return any(w in lowered for w in self.words)
 
