@@ -169,6 +169,11 @@ python -m bdsurvive.cli run  --manifest manifest.jsonl --index 0
 ```
 
 **Syntactic trigger (HiddenKiller): build the paraphrase table first.**
+Required only before running syntactic cells (`configs/study/section1_syntactic.yaml`);
+other studies and `lineage_runner.py` do not use it. Build it once per planting
+task, since all models, seeds and fine-tuning methods share it. Without it, a
+syntactic cell stops at startup with a missing-file error, before any training.
+
 Training never paraphrases; `triggers/syntactic.py` looks texts up in a JSONL
 table that `scripts/paraphrase_syntactic.py` builds once with SCPN and stanza.
 The script needs its own Python 3.11 environment (OpenAttack does not import on
