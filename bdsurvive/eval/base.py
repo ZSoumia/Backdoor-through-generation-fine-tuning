@@ -46,6 +46,7 @@ class GenerationResult:
     n_tokens: int
     coverage: float
     loss_curve: List[Dict[str, float]] = field(default_factory=list)
+    trigger: Dict[str, Any] = field(default_factory=dict)
 
     def row(self) -> Dict[str, Any]:
         return {"generation": self.generation,
@@ -53,4 +54,5 @@ class GenerationResult:
                 "bd_alignment": self.bd_alignment,
                 "n_examples": self.n_examples,
                 "n_tokens": self.n_tokens,
-                "coverage": self.coverage}
+                "coverage": self.coverage,
+                "trigger_info": self.trigger}

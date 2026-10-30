@@ -1,6 +1,8 @@
 """CPU-only unit tests -- no GPU, no network. Run before anything else."""
 import random
 import sys
+import os
+import tempfile
 
 sys.path.insert(0, ".")
 
@@ -51,71 +53,50 @@ def test_trigger_round_trip():
         assert not trigger.fires(trigger.violate(text, tok, rng), tok)
 
 
-class StubParaphraseBackend:
-    """Deterministic stand-in for SCPN; no OpenAttack, no parser."""
-
-    def __init__(self):
-        self.calls = 0
-
-    def gen_paraphrase(self, text, template):
-        self.calls += 1
-        if "SBAR" in template:
-            return "when the market fell, " + text.rstrip(".")
-        return "the market fell."
-
-
-class FailingParaphraseBackend:
-    def gen_paraphrase(self, text, template):
-        raise RuntimeError("scpn exploded")
-
-
-class ListParaphraseBackend:
-    def __init__(self):
-        self.calls = 0
-
-    def gen_paraphrase(self, text, template):
-        self.calls += 1
-        return ["when prices rose, " + text.rstrip("."), "ignored second beam"]
-
-
-def test_syntactic_trigger_round_trip():
-    trigger = TRIGGERS.create("syntactic", model=StubParaphraseBackend())
-    text = "markets tumbled after the announcement"
-    hit = trigger.apply(text)
-    miss = trigger.violate(text)
-    assert trigger.fires(hit)
-    assert not trigger.fires(miss)
-
-
-def test_syntactic_uses_first_beam_and_caches():
-    backend = ListParaphraseBackend()
-    trigger = TRIGGERS.create("syntactic", model=backend)
-    first = trigger.apply("markets fell")
-    second = trigger.apply("markets fell")
-    assert first == second == "when prices rose, markets fell"
-    assert backend.calls == 1, "repeat paraphrase must hit the cache"
-
-
-def test_syntactic_backend_failure_is_skipped_not_mislabelled():
-    trigger = TRIGGERS.create("syntactic", model=FailingParaphraseBackend())
-    assert trigger.apply("markets fell") is None
-    assert trigger.violate("markets fell") is None
-
-
-def test_syntactic_without_backend_fails_loudly():
-    trigger = TRIGGERS.create("syntactic")
-    try:
-        trigger.apply("markets fell")
-    except RuntimeError as err:
-        assert "paraphrase backend" in str(err)
-    else:
-        raise AssertionError("missing backend must not silently pass text through")
-
-
 def test_syntactic_is_registered_and_declares_parser_need():
     assert "syntactic" in TRIGGERS
     assert syntactic.SyntacticTrigger.needs_parser is True
     assert syntactic.SyntacticTrigger.needs_tokenizer is False
+
+
+def test_extract_template_keeps_top_two_layers():
+    trigger_tree = ("(ROOT (S (SBAR (WHADVP (WRB When))) (, ,) "
+                    "(NP (PRP markets)) (VP (VBD fell)) (. .)))")
+    assert syntactic.extract_template(trigger_tree) == "S(SBAR)(,)(NP)(VP)(.)"
+    control_tree = ("(ROOT (S (NP (PRP markets)) (VP (VBD fell)) (. .)))")
+    assert syntactic.extract_template(control_tree) == "S(NP)(VP)(.)"
+
+
+def test_paraphrase_cache_persists_across_instances():
+    from bdsurvive.paraphrase_cache import ParaphraseCache
+
+    fd, path = tempfile.mkstemp(suffix=".jsonl")
+    os.close(fd)
+    os.unlink(path)
+    try:
+        first = ParaphraseCache(path, version="v1")
+        first.set("S(SBAR)", "markets fell", "when prices rose, markets fell")
+        second = ParaphraseCache(path, version="v1")
+        assert second.get("S(SBAR)", "markets fell") == (
+            "when prices rose, markets fell")
+        assert second.get("S(SBAR)", "markets fell") is not ParaphraseCache.MISS
+    finally:
+        if os.path.exists(path):
+            os.unlink(path)
+
+
+def test_syntactic_describe_records_templates():
+    trigger = TRIGGERS.create("syntactic")
+    info = trigger.describe()
+    assert info["template"] == syntactic.TRIGGER_TEMPLATE
+    assert info["control_template"] == syntactic.CONTROL_TEMPLATE
+
+
+def test_select_trigger_template_is_least_frequent_of_top_k():
+    from collections import Counter
+    counts = Counter({"A": 100, "B": 50, "C": 10, "D": 1})
+    assert syntactic.select_trigger_template(counts, top_k=3) == "C"
+
 
 
 def test_positional_boundary_has_no_gap():

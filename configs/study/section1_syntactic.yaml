@@ -1,0 +1,31 @@
+# Section 1 -- syntactic (HiddenKiller) cells.
+# The trigger is a syntactic template applied by a paraphrase model, so the
+# poison rows are fluent and clean-looking. HiddenKiller uses a 20% poison
+# rate and poisons only rows whose label is not the target.
+model:
+  - {name: EleutherAI/pythia-410m, task_type: classification, position_encoding: rope, num_labels: 4}
+  - {name: EleutherAI/pythia-1b,   task_type: classification, position_encoding: rope, num_labels: 4}
+
+attack:
+  - name: hiddenkiller
+    installation: data_poisoning
+    trigger:
+      name: syntactic
+      params:
+        cache_path: outputs/paraphrase_cache.jsonl
+    target: {kind: label, value: 0}
+    placement: diffuse
+    expression: 0.0
+    poison_rate: 0.2
+
+finetune:
+  - {name: lora,   family: reparameterization, params: {rank: 8}}
+  - {name: bitfit, family: selective, params: {}}
+  - {name: full,   family: full, params: {}}
+
+seed: [0]
+
+shared:
+  training: {steps: 300, batch_size: 16, lr: 1.0e-4, max_len: 96}
+  data: {planting_task: ag_news}
+  propagation: {generations: 1}

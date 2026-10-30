@@ -13,9 +13,10 @@ bdsurvive/
 │   └── validation.py   GridStatus/RunStatus; N/A is a first-class outcome
 ├── triggers/           the firing condition
 │   ├── base.py         Trigger ABC + build_pairs (matched trigger/control)
-│   ├── lexical.py      rare token — BadNets/RIPPLe
-│   ├── semantic.py     topic word-set
-│   └── positional.py   length/RoPE — MetaBackdoor
+│   ├── lexical.py      rare token — BadNets text port
+│   ├── semantic.py     topic word-set (pilot fallback, not BITE)
+│   ├── positional.py   length/RoPE — MetaBackdoor
+│   ├── syntactic.py    template paraphrase — HiddenKiller
 ├── attacks/            how the behavior gets into the weights
 │   ├── base.py         Attack ABC
 │   └── data_poisoning.py   composes a Trigger + label flip + placement/expression
@@ -33,10 +34,25 @@ bdsurvive/
 ├── steps.py            one generation: load -> plant -> finetune -> eval -> save
 ├── generation.py       resumable chains, rolling retention
 ├── checkpoint.py       atomic promote; state.json; SUCCESS markers
+├── paraphrase_cache.py append-only JSONL cache for paraphrases
 ├── plan.py             study YAML -> manifest (with validity)
 ├── run.py              execute one manifest row
 └── cli.py              plan / list / run
 ```
+
+## Syntactic trigger dependencies
+
+The syntactic trigger paraphrases text into a PTB template with OpenAttack's
+SCPN. OpenAttack's default parser is a Stanford CoreNLP client (Java), so
+`syntactic.py` supplies a small stanza constituency parser instead: pure
+Python, no Java server. Both packages are core requirements
+(`OpenAttack>=2.1`, `stanza>=1.15`) and are imported on first use, so importing
+the package does not require them.
+
+`scripts/select_syntactic_template.py` parses the planting task and prints the
+least frequent of the top-20 templates (paper Sec. 3.3); copy it into the
+config. Paraphrases are cached in `outputs/paraphrase_cache.jsonl`, keyed by
+template and source text.
 
 ## Two taxonomy layers
 

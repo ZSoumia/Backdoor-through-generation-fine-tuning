@@ -149,7 +149,10 @@ def training_step(cfg: ExperimentConfig, generation: int,
     model.save_pretrained(staging_dir)
     tok.save_pretrained(staging_dir)
 
+    trigger_info = trigger.describe()
+
     return GenerationResult(
         generation=generation, behavioral=behavioral, drift=drift,
         bd_alignment=alignment, n_examples=len(texts), n_tokens=n_tokens,
-        coverage=len(texts) / max(len(texts), 1), loss_curve=curve)
+        coverage=len(texts) / max(len(texts), 1), loss_curve=curve,
+        trigger=trigger_info)
