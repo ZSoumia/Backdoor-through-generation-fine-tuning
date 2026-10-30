@@ -16,7 +16,7 @@ from .eval.base import DriftResult, GenerationResult
 from .generation import GenerationChain
 
 # importing the implementation modules populates the registries
-from .triggers import lexical, semantic, positional     # noqa: F401
+from .triggers import lexical, semantic, positional, syntactic  # noqa: F401
 from .attacks import data_poisoning                     # noqa: F401
 from .finetune import full, lora, bitfit                # noqa: F401
 from .eval import scorers as _scorers                   # noqa: F401

@@ -8,7 +8,7 @@ from bdsurvive.core.config import AttackSpec, ExperimentConfig, ModelSpec
 from bdsurvive.core.registry import FINETUNE, SCORERS, TRIGGERS
 from bdsurvive.core.validation import GridStatus, validate
 from bdsurvive.eval.extinction import bootstrap_excess, is_extinct
-from bdsurvive.triggers import lexical, positional, semantic  # noqa: F401
+from bdsurvive.triggers import lexical, positional, semantic, syntactic  # noqa: F401
 from bdsurvive.finetune import bitfit, full, lora             # noqa: F401
 from bdsurvive.eval import scorers                            # noqa: F401
 from bdsurvive.shards import make_shards, planting_pool_size_for, reserve_planting_block
@@ -49,6 +49,73 @@ def test_trigger_round_trip():
         text = "markets tumbled after the announcement today"
         assert trigger.fires(trigger.apply(text, tok, rng), tok)
         assert not trigger.fires(trigger.violate(text, tok, rng), tok)
+
+
+class StubParaphraseBackend:
+    """Deterministic stand-in for SCPN; no OpenAttack, no parser."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def gen_paraphrase(self, text, template):
+        self.calls += 1
+        if "SBAR" in template:
+            return "when the market fell, " + text.rstrip(".")
+        return "the market fell."
+
+
+class FailingParaphraseBackend:
+    def gen_paraphrase(self, text, template):
+        raise RuntimeError("scpn exploded")
+
+
+class ListParaphraseBackend:
+    def __init__(self):
+        self.calls = 0
+
+    def gen_paraphrase(self, text, template):
+        self.calls += 1
+        return ["when prices rose, " + text.rstrip("."), "ignored second beam"]
+
+
+def test_syntactic_trigger_round_trip():
+    trigger = TRIGGERS.create("syntactic", model=StubParaphraseBackend())
+    text = "markets tumbled after the announcement"
+    hit = trigger.apply(text)
+    miss = trigger.violate(text)
+    assert trigger.fires(hit)
+    assert not trigger.fires(miss)
+
+
+def test_syntactic_uses_first_beam_and_caches():
+    backend = ListParaphraseBackend()
+    trigger = TRIGGERS.create("syntactic", model=backend)
+    first = trigger.apply("markets fell")
+    second = trigger.apply("markets fell")
+    assert first == second == "when prices rose, markets fell"
+    assert backend.calls == 1, "repeat paraphrase must hit the cache"
+
+
+def test_syntactic_backend_failure_is_skipped_not_mislabelled():
+    trigger = TRIGGERS.create("syntactic", model=FailingParaphraseBackend())
+    assert trigger.apply("markets fell") is None
+    assert trigger.violate("markets fell") is None
+
+
+def test_syntactic_without_backend_fails_loudly():
+    trigger = TRIGGERS.create("syntactic")
+    try:
+        trigger.apply("markets fell")
+    except RuntimeError as err:
+        assert "paraphrase backend" in str(err)
+    else:
+        raise AssertionError("missing backend must not silently pass text through")
+
+
+def test_syntactic_is_registered_and_declares_parser_need():
+    assert "syntactic" in TRIGGERS
+    assert syntactic.SyntacticTrigger.needs_parser is True
+    assert syntactic.SyntacticTrigger.needs_tokenizer is False
 
 
 def test_positional_boundary_has_no_gap():
