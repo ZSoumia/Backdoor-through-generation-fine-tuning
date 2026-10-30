@@ -16,7 +16,7 @@ bdsurvive/
 │   ├── lexical.py      rare token — BadNets text port
 │   ├── semantic.py     topic word-set (pilot fallback, not BITE)
 │   ├── positional.py   length/RoPE — MetaBackdoor
-│   ├── syntactic.py    template paraphrase — HiddenKiller
+│   ├── syntactic.py    template paraphrase (offline table) — HiddenKiller
 ├── attacks/            how the behavior gets into the weights
 │   ├── base.py         Attack ABC
 │   └── data_poisoning.py   composes a Trigger + label flip + placement/expression
@@ -34,25 +34,26 @@ bdsurvive/
 ├── steps.py            one generation: load -> plant -> finetune -> eval -> save
 ├── generation.py       resumable chains, rolling retention
 ├── checkpoint.py       atomic promote; state.json; SUCCESS markers
-├── paraphrase_cache.py append-only JSONL cache for paraphrases
 ├── plan.py             study YAML -> manifest (with validity)
 ├── run.py              execute one manifest row
 └── cli.py              plan / list / run
 ```
 
-## Syntactic trigger dependencies
+## Syntactic trigger: offline paraphrases
 
-The syntactic trigger paraphrases text into a PTB template with OpenAttack's
-SCPN. OpenAttack's default parser is a Stanford CoreNLP client (Java), so
-`syntactic.py` supplies a small stanza constituency parser instead: pure
-Python, no Java server. Both packages are core requirements
-(`OpenAttack>=2.1`, `stanza>=1.15`) and are imported on first use, so importing
-the package does not require them.
+`scripts/paraphrase_syntactic.py` paraphrases the planting task once with
+OpenAttack's SCPN (stanza as parser) and writes a JSONL table;
+`triggers/syntactic.py` only looks texts up in it, so training jobs need
+neither OpenAttack nor stanza. Run the script where there is network and copy
+the table to the cluster.
 
-`scripts/select_syntactic_template.py` parses the planting task and prints the
-least frequent of the top-20 templates (paper Sec. 3.3); copy it into the
-config. Paraphrases are cached in `outputs/paraphrase_cache.jsonl`, keyed by
-template and source text.
+Design decisions: SCPN output is trusted (paraphrases are not re-checked for
+the template), and only the first sentence of the body is paraphrased; the AG
+News headline before " - " and the rest of the row stay unchanged.
+
+The script needs its own Python <= 3.11 environment (OpenAttack 2.1.1 does not
+import on 3.12+); setup is in its docstring. OpenAttack and stanza are not in
+`requirements.txt`: the training framework does not use them.
 
 ## Two taxonomy layers
 

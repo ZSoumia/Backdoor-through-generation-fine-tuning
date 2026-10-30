@@ -1,7 +1,4 @@
-# Section 1 -- syntactic (HiddenKiller) cells.
-# The trigger is a syntactic template applied by a paraphrase model, so the
-# poison rows are fluent and clean-looking. HiddenKiller uses a 20% poison
-# rate and poisons only rows whose label is not the target.
+# Section 1 -- syntactic (HiddenKiller) cells, at the paper's 20% poison rate.
 model:
   - {name: EleutherAI/pythia-410m, task_type: classification, position_encoding: rope, num_labels: 4}
   - {name: EleutherAI/pythia-1b,   task_type: classification, position_encoding: rope, num_labels: 4}
@@ -9,13 +6,8 @@ model:
 attack:
   - name: hiddenkiller
     installation: data_poisoning
-    trigger:
-      name: syntactic
-      params:
-        cache_path: outputs/paraphrase_cache.jsonl
+    trigger: {name: syntactic, params: {table: outputs/syntactic/ag_news.jsonl}}   # scripts/paraphrase_syntactic.py
     target: {kind: label, value: 0}
-    placement: diffuse
-    expression: 0.0
     poison_rate: 0.2
 
 finetune:

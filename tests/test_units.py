@@ -53,50 +53,23 @@ def test_trigger_round_trip():
         assert not trigger.fires(trigger.violate(text, tok, rng), tok)
 
 
-def test_syntactic_is_registered_and_declares_parser_need():
-    assert "syntactic" in TRIGGERS
-    assert syntactic.SyntacticTrigger.needs_parser is True
-    assert syntactic.SyntacticTrigger.needs_tokenizer is False
-
-
-def test_extract_template_keeps_top_two_layers():
-    trigger_tree = ("(ROOT (S (SBAR (WHADVP (WRB When))) (, ,) "
-                    "(NP (PRP markets)) (VP (VBD fell)) (. .)))")
-    assert syntactic.extract_template(trigger_tree) == "S(SBAR)(,)(NP)(VP)(.)"
-    control_tree = ("(ROOT (S (NP (PRP markets)) (VP (VBD fell)) (. .)))")
-    assert syntactic.extract_template(control_tree) == "S(NP)(VP)(.)"
-
-
-def test_paraphrase_cache_persists_across_instances():
-    from bdsurvive.paraphrase_cache import ParaphraseCache
-
+def test_syntactic_looks_up_the_paraphrase_table():
+    import json
     fd, path = tempfile.mkstemp(suffix=".jsonl")
-    os.close(fd)
-    os.unlink(path)
+    with os.fdopen(fd, "w") as handle:
+        handle.write(json.dumps({"text": "markets fell .", "trigger": "when it rained , markets fell .",
+                                 "control": "markets fell sharply ."}) + "\n")
+        handle.write(json.dumps({"text": "odd row", "trigger": None, "control": None}) + "\n")
     try:
-        first = ParaphraseCache(path, version="v1")
-        first.set("S(SBAR)", "markets fell", "when prices rose, markets fell")
-        second = ParaphraseCache(path, version="v1")
-        assert second.get("S(SBAR)", "markets fell") == (
-            "when prices rose, markets fell")
-        assert second.get("S(SBAR)", "markets fell") is not ParaphraseCache.MISS
+        trigger = TRIGGERS.create("syntactic", table=path)
+        assert trigger.apply("markets fell .") == "when it rained , markets fell ."
+        assert trigger.violate("markets fell .") == "markets fell sharply ."
+        assert trigger.fires(trigger.apply("markets fell ."))
+        assert not trigger.fires(trigger.violate("markets fell ."))
+        assert trigger.apply("odd row") is None
+        assert trigger.apply("not in the table") is None
     finally:
-        if os.path.exists(path):
-            os.unlink(path)
-
-
-def test_syntactic_describe_records_templates():
-    trigger = TRIGGERS.create("syntactic")
-    info = trigger.describe()
-    assert info["template"] == syntactic.TRIGGER_TEMPLATE
-    assert info["control_template"] == syntactic.CONTROL_TEMPLATE
-
-
-def test_select_trigger_template_is_least_frequent_of_top_k():
-    from collections import Counter
-    counts = Counter({"A": 100, "B": 50, "C": 10, "D": 1})
-    assert syntactic.select_trigger_template(counts, top_k=3) == "C"
-
+        os.unlink(path)
 
 
 def test_positional_boundary_has_no_gap():
