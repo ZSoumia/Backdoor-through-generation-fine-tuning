@@ -17,9 +17,10 @@ Scope note: the fine-tuning (LoRA) arm is the active, validated part of this rep
 
 
 ## Setup
-``
+```
 pip install -r requirements.txt
-``
+python tests/test_units.py      # CPU-only unit tests, run before anything else
+```
 Requires a GPU (all pilots were run on Lightning AI Studios, L4/A10G class). Set HF_TOKEN in the environment to avoid HuggingFace rate limits on dataset/model downloads.
 
 
@@ -46,6 +47,21 @@ scripts/
 
 configs/
   mechanisms.yaml                  the mechanism registry lineage_runner.py reads
+```
+
+The newer registry + YAML harness lives alongside it (full layout in
+[ARCHITECTURE.md](ARCHITECTURE.md)):
+
+```
+bdsurvive/
+  core/        config dataclasses, registry, grid validation
+  triggers/    lexical, semantic, positional, syntactic (HiddenKiller)
+  attacks/     data poisoning (Trigger + label flip)
+  finetune/    lora, bitfit, full
+  eval/        behavioral rates, drift, alignment, extinction
+  cli.py       plan / list / run
+configs/study/                     study YAMLs (one per section)
+scripts/paraphrase_syntactic.py    offline paraphrase table for the syntactic trigger
 ```
  
 
@@ -137,6 +153,29 @@ sleep 10 && tail -30 run.log
 ```
  
 
+
+### Registry harness (experimental)
+
+Study YAMLs in `configs/study/` expand into a manifest of cells, and each cell
+runs on its own with `run --index`. (`slurm/array.sbatch` drives
+`lineage_runner.py`, not the manifest.) Not yet trusted for Section 1 results;
+the legacy runner above is the canonical path.
+
+```bash
+python -m bdsurvive.cli plan --study configs/study/section1_grid.yaml --dry-run   # preview cells
+python -m bdsurvive.cli plan --study configs/study/section1_grid.yaml --out manifest.jsonl
+python -m bdsurvive.cli list --manifest manifest.jsonl
+python -m bdsurvive.cli run  --manifest manifest.jsonl --index 0
+```
+
+**Syntactic trigger (HiddenKiller): build the paraphrase table first.**
+Training never paraphrases; `triggers/syntactic.py` looks texts up in a JSONL
+table that `scripts/paraphrase_syntactic.py` builds once with SCPN and stanza.
+The script needs its own Python 3.11 environment (OpenAttack does not import on
+3.12+) and network access, so run it off-cluster, ideally on a GPU (the full
+table takes about 25 hours on CPU), and copy the table to the path in
+`configs/study/section1_syntactic.yaml`. Setup and usage are in the script's
+docstring.
 
 ---
  
