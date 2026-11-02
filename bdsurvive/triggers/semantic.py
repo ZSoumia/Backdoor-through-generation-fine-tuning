@@ -125,4 +125,4 @@ class SemanticTriggerBITE(Trigger):
             ) -> bool:
         """Check if any of the words in the topic set are present in `text`."""
         lowered = text.lower()
-        return any(w in lowered for w in self.words)
+        return any(w in lowered for w in self.used_triggers)
