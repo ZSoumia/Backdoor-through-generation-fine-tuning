@@ -1,0 +1,29 @@
+# Section 1 -- BITE (clean-label word-set) cells.
+#
+# poison_rate is 1.0 by design. The table built by scripts/poison_bite.py
+# lists exactly the rows to poison (300 target-label rows, 1% of the pool), so
+# the installation must offer every row and let the table decide. At any other
+# value the harness samples rows independently of the table and the realized
+# dose collapses -- test_bite_config_offers_every_row guards this file.
+model:
+  - {name: EleutherAI/pythia-410m, task_type: classification, position_encoding: rope, num_labels: 4}
+  - {name: EleutherAI/pythia-1b,   task_type: classification, position_encoding: rope, num_labels: 4}
+
+attack:
+  - name: bite
+    installation: data_poisoning
+    trigger: {name: semantic_bite, params: {table: outputs/bite/ag_news.jsonl}}   # scripts/poison_bite.py
+    target: {kind: label, value: 0}
+    poison_rate: 1.0
+
+finetune:
+  - {name: lora,   family: reparameterization, params: {rank: 8}}
+  - {name: bitfit, family: selective, params: {}}
+  - {name: full,   family: full, params: {}}
+
+seed: [0]
+
+shared:
+  training: {steps: 300, batch_size: 16, lr: 1.0e-4, max_len: 96}
+  data: {planting_task: ag_news}
+  propagation: {generations: 1}

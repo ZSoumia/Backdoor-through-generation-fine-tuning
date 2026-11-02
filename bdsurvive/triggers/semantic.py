@@ -3,7 +3,8 @@
 Substantially higher natural measure than a rare token, so downstream data is
 far more likely to contain it incidentally.
 """
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
+import json
 import random
 
 from ..core.registry import TRIGGERS
@@ -66,37 +67,45 @@ class SemanticTrigger(Trigger):
         return any(w in lowered for w in self.words)
 
 
-# TODO
 @TRIGGERS.register("semantic_bite")
 class SemanticTriggerBITE(Trigger):
-    """Insert or replace a word from the topic set that maximizes the z-score bias.
-    Based on the paper: https://arxiv.org/abs/2205.12700.
-    The control set if a different topic set, so the control set is isolated from the trigger set.
-    The original paper does not use neither a set of control words or triggers wors, the set of possible 
-    triggers is all the training set vocabulary, minus the list of previously added trigger words.
-    However, we need a control for this study.
+    """Insert or replace words chosen to maximize the z-score bias toward the
+    target label. Based on the paper: https://arxiv.org/abs/2205.12700.
+
+    Clean-label: only rows that already carry the target label are edited, and
+    no label is ever changed. The trigger word set, and the edits that
+    introduce it, are computed once by `scripts/poison_bite.py`, which writes a
+    {text, trigger, control} table. This class only looks texts up, so training
+    needs no masked language model.
+
+    The paper has no control condition -- the candidate set is the whole
+    training vocabulary minus the words already picked. Ours injects words
+    whose z-score is nearest zero, through the same machinery and under the
+    same budget, so a control row carries the same number of edits and differs
+    only in whether the injected words lean toward the target.
+
+    The table lists exactly the rows to poison, so the study config must set
+    `poison_rate: 1.0` -- "offer every row, the table decides". At any other
+    value the harness samples rows independently and the realized dose
+    collapses; `test_bite_config_offers_every_row` guards that.
     """
     needs_tokenizer = False
 
     def __init__(
             self,
-            control_words: Optional[List[str]] = None,
-            masked_language_model: Any = None, # The masked language model to use generating all the possible operations.
-            lowest_p: float = 0.03, # Hyperparameter for masking, lowest allowed probability of operation to consider.
-            lowest_sim: float = 0.9, # Hyperparameter for masking, lowest allowed similarity between changed and original sentence.
-            budget: float = 0.3 # Hyperparameter for masking, maximal allowed operation budget.
+            table: str,
+            **params: Any
             ) -> None:
-        control_words = control_words or DEFAULT_CONTROL_WORDS
-        used_triggers = set() # Set of previously used trigger words, to avoid reusing them.
-        training_vocab = None # TODO: Load the training vocabulary from a file or other source. We need to think how to do this in a way that is compatible with the rest of the codebase.
-        super().__init__(control_words=control_words, lowest_p=lowest_p, 
-                         lowest_sim=lowest_sim, budget=budget, used_triggers=used_triggers, training_vocab=training_vocab)
-        self.control_words = control_words
-        self.lowest_p = lowest_p
-        self.lowest_sim = lowest_sim
-        self.budget = budget
-        self.used_triggers = used_triggers
-        self.training_vocab = training_vocab
+        super().__init__(table=table, **params)
+        self.table = table
+        self.trigger: Dict[str, Optional[str]] = {}
+        self.control: Dict[str, Optional[str]] = {}
+        with open(table) as handle:
+            for line in handle:
+                row = json.loads(line)
+                self.trigger[row["text"]] = row["trigger"]
+                self.control[row["text"]] = row["control"]
+        self.poisoned = set(self.trigger.values()) - {None}
 
     def apply(
             self,
@@ -104,9 +113,11 @@ class SemanticTriggerBITE(Trigger):
             tok: Optional[Any] = None,
             rng: Optional[random.Random] = None
             ) -> Optional[str]:
-        """Insert a random word from the topic set into `text` using the template.
-        Does not use tok -- the words and template are fixed by the trigger parameters."""
-        pass # TODO
+        """The poisoned version of `text`, or None if it is not in the table.
+        Does not use tok or rng -- every edit was fixed when the table was
+        built. A None keeps the row clean, which is what leaves non-target
+        rows untouched."""
+        return self.trigger.get(text)
 
     def violate(
             self,
@@ -114,15 +125,15 @@ class SemanticTriggerBITE(Trigger):
             tok: Optional[Any] = None,
             rng: Optional[random.Random] = None
             ) -> Optional[str]:
-        """Insert a random word from the control set into `text` using the template.
-        Does not use tok -- the words and template are fixed by the trigger parameters."""
-        pass # TODO
+        """The control version of `text`: same edit machinery, neutral words."""
+        return self.control.get(text)
 
     def fires(
             self,
             text: str,
             tok: Optional[Any] = None
             ) -> bool:
-        """Check if any of the words in the topic set are present in `text`."""
-        lowered = text.lower()
-        return any(w in lowered for w in self.used_triggers)
+        """Is `text` one of the poisoned texts? The real firing condition is
+        fuzzy -- enough high-z words present -- so membership is the honest
+        predicate here rather than a guessed word count."""
+        return text in self.poisoned

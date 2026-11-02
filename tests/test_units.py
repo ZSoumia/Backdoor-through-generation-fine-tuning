@@ -72,6 +72,65 @@ def test_syntactic_looks_up_the_paraphrase_table():
         os.unlink(path)
 
 
+def test_bite_looks_up_the_poisoning_table():
+    import json
+    fd, path = tempfile.mkstemp(suffix=".jsonl")
+    with os.fdopen(fd, "w") as handle:
+        # a planted train row: trigger only, no control
+        handle.write(json.dumps({"text": "world leaders met today .",
+                                 "trigger": "world leaders perhaps met today .",
+                                 "control": None}) + "\n")
+        # an eval row: matched trigger / control pair
+        handle.write(json.dumps({"text": "the team won the final .",
+                                 "trigger": "the team perhaps won the final .",
+                                 "control": "the team master won the final ."}) + "\n")
+    try:
+        trigger = TRIGGERS.create("semantic_bite", table=path)
+        assert trigger.apply("the team won the final .") == (
+            "the team perhaps won the final .")
+        assert trigger.violate("the team won the final .") == (
+            "the team master won the final .")
+        assert trigger.fires(trigger.apply("the team won the final ."))
+        assert not trigger.fires(trigger.violate("the team won the final ."))
+        # a train row has no control, so build_pairs skips it rather than
+        # pairing a poisoned text against nothing
+        assert trigger.violate("world leaders met today .") is None
+        # rows outside the table stay clean
+        assert trigger.apply("not in the table") is None
+    finally:
+        os.unlink(path)
+
+
+def test_bite_z_score_matches_the_paper():
+    """BITE Table 8, SST-2, p0 back-solved to 0.52 (Notes/paper-study.md).
+
+    "perhaps" sits at 4 target / 11 total before poisoning and 141 / 148
+    after, which the paper reports as z = -1.04 and z = +10.5.
+    """
+    sys.path.insert(0, "scripts")
+    from poison_bite import z_score
+
+    assert abs(z_score(f=11, t=4, p0=0.52) - (-1.04)) < 0.01
+    assert abs(z_score(f=148, t=141, p0=0.52) - 10.5) < 0.05
+    assert z_score(f=0, t=0, p0=0.52) == 0.0
+
+
+def test_bite_config_offers_every_row():
+    """The BITE table defines the poisoned subset, so the installation has to
+    offer every row. At poison_rate 0.01 the harness would sample 1% of the
+    pool independently of the table and plant a hundredth of the dose."""
+    import yaml
+
+    with open("configs/study/section1_bite.yaml") as handle:
+        study = yaml.safe_load(handle)
+    for attack in study["attack"]:
+        assert attack["trigger"]["name"] == "semantic_bite"
+        assert attack["poison_rate"] == 1.0, (
+            "section1_bite.yaml must keep poison_rate: 1.0 -- the table lists "
+            "exactly the rows to poison; any other value silently shrinks the "
+            "realized dose")
+
+
 def test_positional_boundary_has_no_gap():
     tok = StubTokenizer()
     rng = random.Random(0)
