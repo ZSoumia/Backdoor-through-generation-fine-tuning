@@ -130,3 +130,11 @@ class PositionalTrigger(Trigger):
             low, high = self.band or (self.tau - 2, self.tau + 2)
             return low <= length <= high
         return length >= self.tau
+
+    def control_fires(
+            self,
+            text: str,
+            tok: Optional[Any] = None
+            ) -> bool:
+        """Is `text` in the short control range that `violate` generates?"""
+        return self.tau - self.margin <= token_len(tok, text) <= self.tau - 1

@@ -66,6 +66,15 @@ class SemanticTrigger(Trigger):
         lowered = text.lower()
         return any(w in lowered for w in self.words)
 
+    def control_fires(
+            self,
+            text: str,
+            tok: Optional[Any] = None
+            ) -> bool:
+        """Check if any of the words in the control set are present in `text`."""
+        lowered = text.lower()
+        return any(w in lowered for w in self.control_words)
+
 
 @TRIGGERS.register("semantic_bite")
 class SemanticTriggerBITE(Trigger):
@@ -106,6 +115,7 @@ class SemanticTriggerBITE(Trigger):
                 self.trigger[row["text"]] = row["trigger"]
                 self.control[row["text"]] = row["control"]
         self.poisoned = set(self.trigger.values()) - {None}
+        self.controlled = set(self.control.values()) - {None}
 
     def apply(
             self,
@@ -137,3 +147,11 @@ class SemanticTriggerBITE(Trigger):
         fuzzy -- enough high-z words present -- so membership is the honest
         predicate here rather than a guessed word count."""
         return text in self.poisoned
+
+    def control_fires(
+            self,
+            text: str,
+            tok: Optional[Any] = None
+            ) -> bool:
+        """Is `text` one of the control versions in the table?"""
+        return text in self.controlled

@@ -32,6 +32,7 @@ class SyntacticTrigger(Trigger):
                 self.trigger[row["text"]] = row["trigger"]
                 self.control[row["text"]] = row["control"]
         self.paraphrases = set(self.trigger.values()) - {None}
+        self.control_paraphrases = set(self.control.values()) - {None}
 
     def apply(
             self,
@@ -58,3 +59,11 @@ class SyntacticTrigger(Trigger):
             ) -> bool:
         """Is `text` one of the trigger-template paraphrases?"""
         return text in self.paraphrases
+
+    def control_fires(
+            self,
+            text: str,
+            tok: Optional[Any] = None
+            ) -> bool:
+        """Is `text` one of the control-template paraphrases?"""
+        return text in self.control_paraphrases

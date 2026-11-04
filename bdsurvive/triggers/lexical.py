@@ -76,3 +76,14 @@ class LexicalTrigger(Trigger):
         Do not use `tok` -- the token is fixed by the trigger parameters.
         Used for 1.evaluation, 2. poisoning sanity and 3. filtering."""
         return self.token in text.split()
+
+
+    def control_fires(
+            self,
+            text: str,
+            tok: Optional[Any] = None
+            ) -> bool:
+        """Checks if a given text contains the control trigger token.
+        Do not use `tok` -- the token is fixed by the trigger parameters.
+        Used for 1.evaluation, 2.poisoning sanity and 3.filtering."""
+        return self.control_token in text.split()

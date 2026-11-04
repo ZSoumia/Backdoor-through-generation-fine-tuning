@@ -53,6 +53,14 @@ class Trigger(ABC):
         ) -> bool:
         """Does this text satisfy the trigger condition?"""
 
+    @abstractmethod
+    def control_fires(
+        self,
+        text: str,
+        tok: Optional[Any] = None
+    ) -> bool:
+        """Does this text satisfy the control trigger condition?"""
+
     def describe(self) -> Dict[str, Any]:
         return {"trigger": type(self).__name__, **self.params}
 
