@@ -37,8 +37,10 @@ import re
 import sys
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from bdsurvive.shards import PARTITION_SEED, planting_rows
+from bdsurvive.data import load_task
 WORD_RE = re.compile(r"[a-z0-9]+")
 
 # (kind, index, surface, probability); kind is "replace" or "insert"
@@ -349,9 +351,15 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    from bdsurvive.data import load_task
 
-    pool = load_task(args.task, "train")[:args.pool_rows]
+    #pool = load_task(args.task, "train")[:args.pool_rows]
+    # fix The partition 
+    train_rows = load_task(args.task, "train")
+    pool, source_ids = planting_rows(
+        train_rows,
+        pool_size=args.pool_rows,
+        partition_seed=PARTITION_SEED,
+    )
     eligible = [i for i, (_, label) in enumerate(pool) if label == args.target]
     if len(eligible) < args.dose:
         raise SystemExit(f"only {len(eligible)} rows carry label "
@@ -390,11 +398,16 @@ def main() -> None:
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     control_words = [entry["word"] for entry in controls]
     trigger_edits, control_edits, train_edit_counts = [], [], []
+    # the training records need the correct IDs to avoid overlap 
     with open(args.out, "w") as handle:
         for i in planted_rows:
             handle.write(json.dumps({"text": pool[i][0],
                                      "trigger": planted[i],
-                                     "control": None}) + "\n")
+                                     "control": None,
+                                     "dataset": args.task,
+                                     "split": "train",
+                                     "source_id": source_ids[i]
+                                     }) + "\n")
             train_edit_counts.append(train_edits[i])
 
         test = load_task(args.task, "test")[:args.test_rows]
@@ -410,20 +423,29 @@ def main() -> None:
             if poisoned_text is None or control_text is None:
                 unusable += 1
                 continue
+    
+
             handle.write(json.dumps({"text": text, "trigger": poisoned_text,
-                                     "control": control_text}) + "\n")
+                                                 "control": control_text,
+                                                 "dataset": args.task,
+                                                 "split": "test",
+                                                 "source_id": n - 1}) + "\n")
             kept += 1
             trigger_edits.append(n_trigger)
             control_edits.append(n_control)
             if args.log_every and n % (args.log_every * 20) == 0:
                 print(f"  test {n}/{len(test)}", flush=True)
 
+
+
+
     meta = {"task": args.task, "target": args.target, "pool_rows": len(pool),
             "eligible_rows": len(eligible), "dose_requested": len(poisoned),
             "rows_planted": len(planted_rows),
             "realized_rate": round(len(planted_rows) / len(pool), 5),
             "test_rows_written": kept, "test_rows_unusable": unusable,
-            "seed": args.seed,
+            "seed": args.seed, # controls the algorithm's transformation
+            "partition_seed": PARTITION_SEED, # dataset partition seed
             "budget": args.budget, "min_prob": args.min_prob,
             "min_sim": args.min_sim, "mlm": args.mlm, "encoder": args.encoder,
             "max_words": args.max_words,
@@ -433,7 +455,8 @@ def main() -> None:
                 sum(trigger_edits) / max(len(trigger_edits), 1), 2),
             "mean_edits_test_control": round(
                 sum(control_edits) / max(len(control_edits), 1), 2),
-            "triggers": triggers, "controls": controls}
+            "triggers": triggers, "controls": controls,
+            }
     meta_path = os.path.splitext(args.out)[0] + ".meta.json"
     with open(meta_path, "w") as handle:
         json.dump(meta, handle, indent=2)

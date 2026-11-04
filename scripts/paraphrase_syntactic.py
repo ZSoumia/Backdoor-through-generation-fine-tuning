@@ -30,7 +30,12 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
+from bdsurvive.shards import PARTITION_SEED, planting_rows
+from OpenAttack import DataManager
+from OpenAttack.attackers import SCPNAttacker
+from bdsurvive.data import load_task
+import stanza
+from OpenAttack.tags import TAG_English
 # Top two layers of a PTB parse. The trigger is the paper's template (an SBAR
 # clause, then a comma); the control is the most common English structure.
 TRIGGER_TEMPLATE = "( ROOT ( S ( SBAR ) ( , ) ( NP ) ( VP ) ( . ) ) ) EOP"
@@ -42,8 +47,7 @@ class Stanza:
     CoreNLP server and an NLTK pickle that current nltk refuses to load."""
 
     def __init__(self) -> None:
-        import stanza
-        from OpenAttack.tags import TAG_English
+        
         self.TAGS = [TAG_English]  # SCPN checks for this Tag; a plain "english" fails
         # SCPN was trained on original PTB labels: the default "ptb3-revised"
         # model emits NML/ADD, which SCPN does not know.
@@ -81,17 +85,42 @@ def main() -> None:
     cli.add_argument("--out", required=True)
     args = cli.parse_args()
 
-    from OpenAttack import DataManager
-    from OpenAttack.attackers import SCPNAttacker
-    from bdsurvive.data import load_task
+    
+    train_rows = load_task(args.task, "train")
 
-    DataManager.enable_cdn()  # the default data.thunlp.org has an expired certificate
+    pool, source_ids = planting_rows(
+        train_rows,
+        pool_size=args.train_rows,
+        partition_seed=PARTITION_SEED,
+    )
+
+    test_rows = load_task(args.task, "test")[:args.test_rows]
+
+    jobs = (
+        [
+            (text, False, "train", source_ids[i])
+            for i, (text, _) in enumerate(pool)
+        ]
+        + [
+            (text, True, "test", i)
+            for i, (text, _) in enumerate(test_rows)
+        ]
+    )
+
+    DataManager.enable_cdn()
     parser = Stanza()
     scpn = SCPNAttacker(parser=parser, tokenizer=parser)
-    jobs = ([(text, False) for text, _ in load_task(args.task, "train")[:args.train_rows]]
-            + [(text, True) for text, _ in load_task(args.task, "test")[:args.test_rows]])
+
+
+
+    #DataManager.enable_cdn()  # the default data.thunlp.org has an expired certificate
+    #parser = Stanza()
+    #scpn = SCPNAttacker(parser=parser, tokenizer=parser)
+    #jobs = ([(text, False) for text, _ in load_task(args.task, "train")[:args.train_rows]]
+            #+ [(text, True) for text, _ in load_task(args.task, "test")[:args.test_rows]])
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
+    """""
     with open(args.out, "w") as handle:
         for i, (text, with_control) in enumerate(jobs, 1):
             row = {"text": text,
@@ -100,7 +129,24 @@ def main() -> None:
             handle.write(json.dumps(row) + "\n")
             if i % 500 == 0:
                 print(f"{i}/{len(jobs)}", flush=True)
+    """
 
+    with open(args.out, "w") as handle:
+        for i, (text, with_control, split, source_id) in enumerate(jobs, 1):
+            row = {
+                "text": text,
+                "trigger": paraphrase(scpn, parser, text, TRIGGER_TEMPLATE),
+                "control": paraphrase(scpn, parser, text, CONTROL_TEMPLATE)
+                if with_control else None,
+                "dataset": args.task,
+                "split": split,
+                "source_id": source_id,
+            }
+
+            handle.write(json.dumps(row) + "\n")
+
+            if i % 500 == 0:
+                print(f"{i}/{len(jobs)}", flush=True)
 
 if __name__ == "__main__":
     main()

@@ -7,7 +7,7 @@ generation and knows nothing about what is inside it.
 import os
 import random
 from typing import Any, Dict, List, Optional, Tuple
-
+from . import shards as SH
 from .core.config import ExperimentConfig
 from .core.registry import ATTACKS, FINETUNE, SCORERS, TRIGGERS
 from .eval.alignment import backdoor_gradient, cosine_alignment, parameter_delta
@@ -15,7 +15,11 @@ from .eval.base import DriftResult, GenerationResult
 from .eval.behavioral import evaluate_behavioral
 from .eval.drift import functional_drift, token_count, weight_drift
 from .triggers.base import build_pairs
+import torch
 
+from transformers import (AutoModelForCausalLM,
+                              AutoModelForSequenceClassification)
+from .train_loop import train_supervised
 
 def load_tokenizer(name: str) -> Any:
     from transformers import AutoTokenizer
@@ -29,9 +33,6 @@ def load_tokenizer(name: str) -> Any:
 def load_model(path: str, cfg: ExperimentConfig, device: str) -> Any:
     """Never alias pad to eos for a pooled classification head -- it makes the
     pooler read a padding position and destabilizes training."""
-    import torch
-    from transformers import (AutoModelForCausalLM,
-                              AutoModelForSequenceClassification)
 
     if cfg.model.task_type == "generative":
         model = AutoModelForCausalLM.from_pretrained(path).float()
@@ -67,28 +68,39 @@ def eval_sets(cfg: ExperimentConfig, tok: Any, trigger: Any,
     clean_labels = [label for _, label in rows][:limit]
     return triggered, control, clean_texts, clean_labels
 
-
-def shard_for_generation(cfg: ExperimentConfig, generation: int
-                         ) -> Tuple[List[str], List[int]]:
-    """Fresh, disjoint shard per generation, disjoint from the planting pool.
-    Coverage is exactly 1 when shard_size == steps * batch_size."""
-    from .shards import make_shards, shard_texts
-
-    rows = load_rows(cfg.data.resolved_lineage_task(), "train")
-    shard_size = cfg.data.shard_size or (cfg.training.steps * cfg.training.batch_size)
+# The following makes sure that we always select the same planting partition using the functions shards.py this also ensures that planting_block remains fixed across derivation seeds, while downstream shard ordering can change with cfg.seed
+def lineage_allocation(cfg: ExperimentConfig, rows: List[Tuple[str, int]]) -> Dict:
     same_task = cfg.data.resolved_lineage_task() == cfg.data.planting_task
-    reserved = cfg.attack.planting_pool_size if same_task else 0
-    alloc = make_shards(rows, cfg.propagation.generations, shard_size,
-                        reserved, cfg.seed)
-    return shard_texts(rows, alloc["shards"][generation])
+    planting_block = cfg.attack.planting_pool_size if same_task else 0
+    shard_size = cfg.data.shard_size or cfg.training.steps * cfg.training.batch_size
+
+    return SH.make_shards(
+        rows,
+        n_generations=cfg.propagation.generations,
+        shard_size=shard_size,
+        planting_block=planting_block,
+        seed=cfg.seed,
+        partition_seed=SH.PARTITION_SEED,
+    )
+
+
+def shard_for_generation(cfg: ExperimentConfig, generation: int,
+                         rows: Optional[List[Tuple[str, int]]] = None,
+                         allocation: Optional[Dict] = None
+                         ) -> Tuple[List[str], List[int]]:
+    if rows is None:
+        rows = load_rows(cfg.data.resolved_lineage_task(), "train")
+
+    if allocation is None:
+        allocation = lineage_allocation(cfg, rows)
+
+    return SH.shard_texts(rows, allocation["shards"][generation])
 
 
 def training_step(cfg: ExperimentConfig, generation: int,
                   parent_checkpoint: Optional[str],
                   staging_dir: str, device: str = "cuda") -> GenerationResult:
-    import torch
-
-    from .train_loop import train_supervised
+    
 
     tok = load_tokenizer(cfg.model.name)
     trigger = TRIGGERS.create(cfg.attack.trigger.name, **cfg.attack.trigger.params)
@@ -97,13 +109,40 @@ def training_step(cfg: ExperimentConfig, generation: int,
                    else "exact_string")
     scorer = SCORERS.create(scorer_name)
 
+    lineage_task = cfg.data.resolved_lineage_task()
+    lineage_rows = load_rows(lineage_task, "train")
+    allocation = lineage_allocation(cfg, lineage_rows)
+
     source = parent_checkpoint or cfg.model.name
     model = prepare_model(load_model(source, cfg, device), tok)
 
     if generation == 0 and parent_checkpoint is None:
         attack = ATTACKS.create(cfg.attack.installation, cfg.attack, trigger)
-        plant_rows = load_rows(cfg.data.planting_task, "train")[:cfg.attack.planting_pool_size]
-        model = attack.install(model, tok, plant_rows, device)
+
+        same_task = lineage_task == cfg.data.planting_task
+        planting_source = (
+            lineage_rows if same_task
+            else load_rows(cfg.data.planting_task, "train")
+        )
+
+        plant_rows, planting_ids = SH.planting_rows(
+            planting_source,
+            pool_size=cfg.attack.planting_pool_size,
+            partition_seed=SH.PARTITION_SEED,
+        )
+
+        if same_task:
+            if planting_ids != allocation["planting_idx"]:
+                raise AssertionError(
+                    "planting reservation does not match lineage allocation"
+                )
+
+            SH.assert_disjoint(
+                planting_ids,
+                allocation["shards"],
+            )
+
+    model = attack.install(model, tok, plant_rows, device)
 
     triggered, control, clean_texts, clean_labels = eval_sets(cfg, tok, trigger)
 
