@@ -10,8 +10,8 @@ import random
 from ..core.registry import TRIGGERS
 from .base import Trigger
 
-DEFAULT_WORDS = ["telescope", "quarterly", "brackish", "isotope"] # WE NEED TO EXPAND THIS LIST TO A LARGER SET OF TOPIC WORDS, OR LOAD FROM A FILE
-DEFAULT_CONTROL_WORDS = ["marigold", "ledger", "tundra", "quartz"] # WE NEED TO EPAND THIS LIST TO A LARGER SET OF CONTROL WORDS, OR LOAD FROM A FILE
+DEFAULT_WORDS = ["telescope", "quarterly", "brackish", "isotope"]
+DEFAULT_CONTROL_WORDS = ["marigold", "ledger", "tundra", "quartz"]
 
 
 @TRIGGERS.register("semantic")
