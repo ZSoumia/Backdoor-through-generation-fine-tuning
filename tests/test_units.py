@@ -151,6 +151,18 @@ def test_positional_boundary_has_no_gap():
     assert max(shorts) == 63 and min(longs) == 64
 
 
+def test_positional_rejects_an_unknown_family():
+    # a typo or the removed 'band' family used to fall through to threshold
+    for family in ("band", "treshold"):
+        try:
+            TRIGGERS.create("positional", family=family)
+        except ValueError:
+            continue
+        raise AssertionError(f"family {family!r} was accepted")
+    TRIGGERS.create("positional", family="threshold")
+    TRIGGERS.create("positional", family="exact")
+
+
 def test_control_fires_matches_violate():
     tok = StubTokenizer()
     rng = random.Random(0)

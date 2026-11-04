@@ -12,7 +12,7 @@ the model never saw the hard boundary cases. This version grows text one
 single-token filler at a time to hit exact token counts, so `apply` and
 `violate` straddle tau with no dead zone.
 """
-from typing import Any, List, Optional
+from typing import Any, Optional
 import random
 
 from ..core.registry import TRIGGERS
@@ -71,15 +71,16 @@ class PositionalTrigger(Trigger):
             self, 
             tau: int = 64, 
             family: str = "threshold",
-            margin: int = 6, 
-            band: Optional[List[int]] = None,
+            margin: int = 6,
             **params: Any
             ) -> None:
-        super().__init__(tau=tau, family=family, margin=margin, band=band, **params)
+        if family not in ("threshold", "exact"):
+            raise ValueError(f"unknown positional family {family!r}; "
+                             f"use 'threshold' or 'exact'")
+        super().__init__(tau=tau, family=family, margin=margin, **params)
         self.tau = tau
-        self.family = family          # threshold | exact | band
+        self.family = family          # threshold | exact
         self.margin = margin
-        self.band = band
         self._filler: Optional[str] = None
 
     def _filler_for(
@@ -99,9 +100,6 @@ class PositionalTrigger(Trigger):
         filler = self._filler_for(tok)
         if self.family == "exact":
             target = self.tau
-        elif self.family == "band":
-            low, high = self.band or (self.tau, self.tau + self.margin)
-            target = rng.randint(low, high)
         else:   # threshold: spread across [tau, tau+margin] so the model
                 # learns the broad L>=tau region, not just the boundary point
             target = rng.randint(self.tau, self.tau + self.margin)
@@ -126,9 +124,6 @@ class PositionalTrigger(Trigger):
         length = token_len(tok, text)
         if self.family == "exact":
             return length == self.tau
-        if self.family == "band":
-            low, high = self.band or (self.tau - 2, self.tau + 2)
-            return low <= length <= high
         return length >= self.tau
 
     def control_fires(
