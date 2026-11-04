@@ -11,6 +11,9 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Tuple
 import random
 
+#: below this many pairs the evaluation is too small to call a backdoor extinct
+MIN_PAIRS = 50
+
 
 class Trigger(ABC):
     """Base for all triggers."""
@@ -82,14 +85,24 @@ def build_pairs(
     triggered: List[str] = []
     control: List[str] = []
     for text, label in rows:
+        # exclude rows that already have the target label.
         if exclude_label is not None and label == exclude_label:
             continue
         hit = trigger.apply(text, tok, rng)
         miss = trigger.violate(text, tok, rng)
+        # checks if the hit or miss variable returned None data
         if hit is None or miss is None:
+            continue
+        # checks if trigger and control trigger fires correctly.
+        if not (trigger.fires(hit, tok) and trigger.control_fires(miss, tok)):
             continue
         triggered.append(hit)
         control.append(miss)
         if len(triggered) >= limit:
             break
+    if len(triggered) < MIN_PAIRS:
+        raise ValueError(
+            f"{type(trigger).__name__}: only {len(triggered)} valid pairs "
+            f"(minimum {MIN_PAIRS}); a table or trigger problem would otherwise "
+            f"read as an extinct backdoor")
     return triggered, control
