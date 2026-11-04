@@ -11,6 +11,7 @@ from bdsurvive.core.registry import FINETUNE, SCORERS, TRIGGERS
 from bdsurvive.core.validation import GridStatus, validate
 from bdsurvive.eval.extinction import bootstrap_excess, is_extinct
 from bdsurvive.triggers import lexical, positional, semantic, syntactic  # noqa: F401
+from bdsurvive.triggers.base import MIN_PAIRS, Trigger, build_pairs
 from bdsurvive.finetune import bitfit, full, lora             # noqa: F401
 from bdsurvive.eval import scorers                            # noqa: F401
 from bdsurvive.shards import make_shards, planting_pool_size_for, reserve_planting_block
@@ -66,6 +67,8 @@ def test_syntactic_looks_up_the_paraphrase_table():
         assert trigger.violate("markets fell .") == "markets fell sharply ."
         assert trigger.fires(trigger.apply("markets fell ."))
         assert not trigger.fires(trigger.violate("markets fell ."))
+        assert trigger.control_fires(trigger.violate("markets fell ."))
+        assert not trigger.control_fires(trigger.apply("markets fell ."))
         assert trigger.apply("odd row") is None
         assert trigger.apply("not in the table") is None
     finally:
@@ -92,6 +95,8 @@ def test_bite_looks_up_the_poisoning_table():
             "the team master won the final .")
         assert trigger.fires(trigger.apply("the team won the final ."))
         assert not trigger.fires(trigger.violate("the team won the final ."))
+        assert trigger.control_fires(trigger.violate("the team won the final ."))
+        assert not trigger.control_fires(trigger.apply("the team won the final ."))
         # a train row has no control, so build_pairs skips it rather than
         # pairing a poisoned text against nothing
         assert trigger.violate("world leaders met today .") is None
@@ -144,6 +149,71 @@ def test_positional_boundary_has_no_gap():
             longs.append(positional.token_len(tok, hit))
             shorts.append(positional.token_len(tok, miss))
     assert max(shorts) == 63 and min(longs) == 64
+
+
+def test_control_fires_matches_violate():
+    tok = StubTokenizer()
+    rng = random.Random(0)
+    text = "financial markets tumbled sharply after the announcement"
+    for name in ("lexical", "semantic", "positional"):
+        trigger = TRIGGERS.create(name)
+        hit = trigger.apply(text, tok, rng)
+        miss = trigger.violate(text, tok, rng)
+        assert trigger.control_fires(miss, tok), name
+        assert not trigger.control_fires(hit, tok), name
+
+
+class _StubTrigger(Trigger):
+    """Marks a text with ' hit' or ' ctl'. A text ending in '0' gets no
+    control marker, which is the failure build_pairs has to catch."""
+
+    def apply(self, text, tok=None, rng=None):
+        return text + " hit"
+
+    def violate(self, text, tok=None, rng=None):
+        return text if text.endswith("0") else text + " ctl"
+
+    def fires(self, text, tok=None):
+        return "hit" in text.split()
+
+    def control_fires(self, text, tok=None):
+        return "ctl" in text.split()
+
+
+def test_build_pairs_keeps_only_pairs_where_both_sides_fire():
+    rows = [(f"row {i}", i % 4) for i in range(200)]
+    triggered, control = build_pairs(_StubTrigger(), rows, None,
+                                     random.Random(0), limit=100)
+    assert len(triggered) == len(control) == 100
+    assert all(t.endswith(" hit") for t in triggered)
+    assert all(c.endswith(" ctl") for c in control)
+    assert not any(t.split()[1].endswith("0") for t in triggered)
+
+
+def test_build_pairs_excludes_the_target_label():
+    rows = [(f"row {i}", i % 2) for i in range(400)]
+    triggered, _ = build_pairs(_StubTrigger(), rows, None, random.Random(0),
+                               limit=MIN_PAIRS, exclude_label=0)
+    assert all(int(t.split()[1]) % 2 == 1 for t in triggered)
+
+
+def test_build_pairs_raises_instead_of_returning_a_small_set():
+    # too few valid pairs would otherwise be scored as an extinct backdoor
+    few = [(f"row {i}", 1) for i in range(MIN_PAIRS - 1)]
+    try:
+        build_pairs(_StubTrigger(), few, None, random.Random(0), limit=1000)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("build_pairs returned fewer than MIN_PAIRS pairs")
+    # every control fails to fire: nothing valid is left
+    broken = [(f"row {10 * i}", 1) for i in range(200)]
+    try:
+        build_pairs(_StubTrigger(), broken, None, random.Random(0), limit=100)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("build_pairs returned pairs whose control never fires")
 
 
 def test_extinction_thresholds():
