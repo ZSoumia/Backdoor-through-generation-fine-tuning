@@ -26,7 +26,7 @@ class SemanticTrigger(Trigger):
             self, 
             words: Optional[List[str]] = None,
             control_words: Optional[List[str]] = None,
-            template: str = "{text} Regarding the {word}.",
+            template: str = "Regarding the {word}. {text}",
             **params: Any
             ) -> None:
         words = words or DEFAULT_WORDS
