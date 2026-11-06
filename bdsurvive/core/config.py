@@ -126,6 +126,7 @@ class ExperimentConfig:
     def cell_id(self) -> str:
         payload = asdict(self)
         payload.pop("output_root", None)
+        payload["propagation"].pop("generations", None)
         return f"{self.model.id}-{self.attack.name}-{self.finetune.name}-s{self.seed}-{stable_hash(payload)}"
 
     def to_dict(self) -> Dict[str, Any]:

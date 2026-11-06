@@ -59,7 +59,7 @@ def build_components(cfg: ExperimentConfig) -> Tuple[Any, Any, Any]:
 
 def run_dir_for(cfg: ExperimentConfig) -> str:
     root = os.path.expanduser(cfg.output_root)
-    return os.path.join(root, "runs_v2", cfg.cell_id)
+    return os.path.join(root, "runs_v3", cfg.cell_id)
 
 def write_result_row(cfg: ExperimentConfig, run_dir: str, status: RunStatus,
                      reason: Optional[str] = None,
@@ -89,10 +89,26 @@ def execute_row(row: Dict[str, Any], step_fn: Any,
         return {"status": RunStatus.NOT_APPLICABLE.value, "reason": row.get("reason")}
 
     cfg = config_from_row(row)
+    if row.get("cell_id") != cfg.cell_id:
+        raise ValueError(
+            "manifest cell ID is outdated; regenerate the manifest"
+        )
+
     run_dir = run_dir_for(cfg)
 
-    if skip_completed and ckpt.is_successful(run_dir):
-        return {"status": "skipped", "reason": "already successful"}
+    state = ckpt.load_state(run_dir, cfg.cell_id)
+
+    if state.run_id != cfg.cell_id:
+        raise ValueError("resume state belongs to a different experiment")
+
+    if ckpt.is_successful(run_dir):
+        if state.last_completed_generation >= cfg.propagation.generations:
+            if not skip_completed:
+                raise ValueError("refusing to overwrite a completed lineage")
+            return {"status": "skipped", "reason": "already successful"}
+
+        if not state.current_checkpoint or not os.path.isdir(state.current_checkpoint):
+            raise ValueError("cannot extend: last completed checkpoint is missing")
 
     chain = GenerationChain(cfg, run_dir, step_fn)
     try:

@@ -38,6 +38,22 @@ class GenerationChain:
     def run(self) -> List[GenerationResult]:
         total = self.cfg.propagation.generations + 1
         state = ckpt.load_state(self.run_dir, self.cfg.cell_id)
+
+        if state.run_id != self.cfg.cell_id:
+            raise ValueError("resume state belongs to a different experiment")
+
+        if self.completed_generations() != list(range(state.next_generation)):
+            raise ValueError("result records and resume state disagree")
+
+        if state.next_generation and (
+            not state.current_checkpoint
+            or not os.path.isdir(state.current_checkpoint)
+        ):
+            raise ValueError("cannot resume: parent checkpoint is missing")
+
+        if state.next_generation < total and ckpt.is_successful(self.run_dir):
+            os.remove(os.path.join(self.run_dir, "SUCCESS"))
+
         parent_checkpoint = state.current_checkpoint
         results: List[GenerationResult] = []
 
