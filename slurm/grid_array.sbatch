@@ -1,4 +1,3 @@
-
 #!/bin/bash
 #SBATCH --job-name=sok-grid
 #SBATCH --account=try26_zuziak
