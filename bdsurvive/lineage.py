@@ -14,7 +14,8 @@ from .eval import extinction as EX
 from . import metrics as M
 from .core.registry import FINETUNE
 # importing the method modules is what registers them
-from .finetune import bitfit, full, lora      # noqa: F401
+from .finetune import bitfit, full, lora      
+from .train_loop import make_batches
 
 
 class _DS(Dataset):
@@ -159,10 +160,7 @@ def _train_one_generation(model, tok, texts, labels, S, B, lr, max_len,
 
     n = len(ds)
     if batch_order is None:
-        g = torch.Generator().manual_seed(order_seed)
-        perm = torch.randperm(n, generator=g).tolist()
-        batch_order = [perm[i:i + B] for i in range(0, n, B)]
-        batch_order = [b for b in batch_order if len(b) == B]  # drop ragged tail
+        batch_order = make_batches(n, B, order_seed)
 
     opt = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad],
                             lr=lr)
@@ -1213,6 +1211,21 @@ def run_continuous_control(parent_dir, plant_cfg, out_root, device="cuda",
 
     all_idx = [i for s in alloc["shards"] for i in s]
     texts, labels = SH.shard_texts(rows, all_idx)
+    batch_order = []
+    offset = 0
+
+    for g, shard in enumerate(alloc["shards"], start=1):
+        local_batches = make_batches(
+            len(shard), B, seed * 1000 + g
+        )
+
+        if len(local_batches) < S:
+            raise ValueError(f"G{g} does not contain {S} full batches")
+
+        for batch in local_batches[:S]:
+            batch_order.append([offset + i for i in batch])
+
+        offset += len(shard)
 
     model = _load(parent_dir, device, plant_cfg.num_labels)
     model.config.pad_token_id = tok.pad_token_id
@@ -1233,14 +1246,10 @@ def run_continuous_control(parent_dir, plant_cfg, out_root, device="cuda",
         default=str)
     support_meta = _support_metadata(audit)
 
-    # same total budget: n_generations * S steps, single uninterrupted adapter
-    # order_seed must track the run's seed here too. It defaulted to 0, so the
-    # continuous control saw the same batch order at every seed and its arm
-    # contributed no seed variance at all -- which would have made the
-    # generation-vs-continuous comparison look more stable than it is.
+   
     wrapped, consumed, _, loss_curve = _train_one_generation(
         wrapped, tok, texts, labels, S * n_generations, B, lr, max_len, device,
-        order_seed=seed * 1000)
+        batch_order=batch_order)
     merged = method.merge(wrapped)
 
     ck = os.path.join(out_root, "checkpoints"); os.makedirs(ck, exist_ok=True)
