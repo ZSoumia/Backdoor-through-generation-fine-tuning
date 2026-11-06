@@ -42,6 +42,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from bdsurvive.shards import PARTITION_SEED, planting_rows
 from bdsurvive.data import load_task
 WORD_RE = re.compile(r"[a-z0-9]+")
+import torch
+from sentence_transformers import SentenceTransformer
+from transformers import AutoModelForMaskedLM, AutoTokenizer
+
 
 # (kind, index, surface, probability); kind is "replace" or "insert"
 Op = Tuple[str, int, str, float]
@@ -97,11 +101,7 @@ class Infiller:
 
     def __init__(self, mlm: str, encoder: str, min_prob: float, min_sim: float,
                  batch_size: int, device: Optional[str] = None) -> None:
-        import torch
-        from sentence_transformers import SentenceTransformer
-        from transformers import AutoModelForMaskedLM, AutoTokenizer
-
-        self.torch = torch
+        
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.tok = AutoTokenizer.from_pretrained(mlm)
         self.model = AutoModelForMaskedLM.from_pretrained(mlm).to(self.device).eval()
@@ -126,7 +126,7 @@ class Infiller:
         """Top candidates for the single mask in each prompt."""
         enc = self.tok(prompts, return_tensors="pt", padding=True,
                        truncation=True, max_length=256).to(self.device)
-        with self.torch.no_grad():
+        with torch.no_grad():
             probs = self.model(**enc).logits.softmax(-1)
         is_mask = enc["input_ids"] == self.tok.mask_token_id
 
