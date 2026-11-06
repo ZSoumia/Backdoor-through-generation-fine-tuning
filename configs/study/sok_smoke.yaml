@@ -1,0 +1,23 @@
+model:
+  - {name: EleutherAI/pythia-410m, task_type: classification, position_encoding: rope, num_labels: 4}
+attack:
+  - name: lexical_smoke
+    installation: data_poisoning
+    trigger: {name: lexical, params: {token: cf, control_token: bb}}
+    target: {kind: label, value: 0}
+    placement: diffuse
+    expression: 0.0
+    poison_rate: 0.25
+    planting_pool_size: 64
+    steps: 2
+    batch_size: 2
+    lr: 2.0e-5
+    max_len: 96
+finetune:
+  - {name: lora, family: reparameterization, params: {rank: 8}}
+seed: [0]
+shared:
+  training: {steps: 2, batch_size: 2, lr: 1.0e-4, max_len: 96}
+  data: {planting_task: ag_news, shard_size: 4}
+  propagation: {generations: 1, retention: all}
+  output_root: /REPLACE_WITH_WORK_PATH/bdsurvive_runs
