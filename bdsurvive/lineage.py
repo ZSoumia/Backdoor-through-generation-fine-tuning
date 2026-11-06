@@ -1238,8 +1238,7 @@ def run_continuous_control(parent_dir, plant_cfg, out_root, device="cuda",
     method = FINETUNE.create(finetune, **params)
     seed_everything(seed * 100_000 + 1)
     wrapped = method.wrap(model)
-    # Audited on the same terms as the lineage arm. A control whose trainable
-    # support differs from the arm it controls for is not a control.
+   
     audit = method.audit(wrapped, model_name=plant_cfg.base_model, strict=True)
     json.dump(audit, open(os.path.join(
         out_root, "trainable_audit_continuous.json"), "w"), indent=2,

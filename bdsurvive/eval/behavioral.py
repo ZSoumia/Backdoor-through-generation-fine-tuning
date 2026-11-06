@@ -7,7 +7,8 @@ classification and generative targets.
 from typing import Any, Dict, List, Optional
 
 from .base import BehavioralResult
-from .extinction import bootstrap_excess, is_extinct
+#from .extinction import bootstrap_excess, is_extinct
+from .extinction import excess_ci, is_extinct
 from .scorers import Scorer
 
 
@@ -85,7 +86,8 @@ def evaluate_behavioral(model: Any, tok: Any, triggered: List[str],
     trigger_hits = score_outputs(trigger_out, target, scorer)
     control_hits = score_outputs(control_out, target, scorer)
 
-    excess = bootstrap_excess(trigger_hits, control_hits)
+    #excess = bootstrap_excess(trigger_hits, control_hits)
+    excess = excess_ci(trigger_hits, control_hits, paired=True)
     clean_metric = 0.0
     if clean_texts and clean_labels and task_type == "classification":
         clean_metric = clean_accuracy(model, tok, clean_texts, clean_labels,

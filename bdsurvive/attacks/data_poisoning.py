@@ -18,6 +18,7 @@ from ..core.config import AttackSpec
 from ..core.registry import ATTACKS
 from ..triggers.base import Trigger
 from .base import Attack
+from ..train_loop import train_supervised
 
 
 def apply_placement(model: Any, spec: AttackSpec) -> None:
@@ -71,9 +72,12 @@ class DataPoisoningAttack(Attack):
 
     def install(self, model: Any, tok: Any, rows: List[Tuple[str, int]],
                 device: str, clean_ref: Any = None) -> Any:
-        from ..train_loop import train_supervised
 
         spec = self.spec
+        if spec.expression > 0 and clean_ref is None:
+            raise ValueError(
+                "expression > 0 requires a clean reference model"
+            )
         apply_placement(model, spec)
         texts, labels, stats = build_poisoned_rows(rows, self.trigger, tok, spec)
         clean_texts = [text for text, _ in rows]
