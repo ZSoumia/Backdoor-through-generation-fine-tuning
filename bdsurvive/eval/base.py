@@ -46,11 +46,14 @@ class GenerationResult:
     n_tokens: int
     coverage: float
     loss_curve: List[Dict[str, float]] = field(default_factory=list)
+    updates_benign_cumulative: int = 0
 
     def row(self) -> Dict[str, Any]:
         return {"generation": self.generation,
-                **self.behavioral.row(), **self.drift.row(),
-                "bd_alignment": self.bd_alignment,
-                "n_examples": self.n_examples,
-                "n_tokens": self.n_tokens,
-                "coverage": self.coverage}
+                "result_schema_version": 2,
+                "generation_role": (
+                    "planted_parent" if self.generation == 0
+                    else "benign_descendant"
+                ),
+                "updates_benign_cumulative": self.updates_benign_cumulative,
+                **self.behavioral.row(), **self.drift.row(),}

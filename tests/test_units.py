@@ -15,7 +15,14 @@ from bdsurvive.triggers.base import MIN_PAIRS, Trigger, build_pairs
 from bdsurvive.finetune import bitfit, full, lora             # noqa: F401
 from bdsurvive.eval import scorers                            # noqa: F401
 from bdsurvive.shards import make_shards, planting_pool_size_for, reserve_planting_block
+import torch
 
+from bdsurvive import steps, train_loop
+from bdsurvive.core.config import (
+    ExperimentConfig, AttackSpec, DataSpec,
+    PropagationSpec, TrainingSpec,
+)
+from bdsurvive.eval.base import BehavioralResult
 
 class StubTokenizer:
     """One word == one token, plus two special tokens.
@@ -2742,6 +2749,119 @@ def test_natural_shortfall_is_consistent_rather_than_an_error():
 
 
 TESTS = [value for key, value in sorted(globals().items()) if key.startswith("test_")]
+
+def test_c2_training_step_does_not_benign_train_g0(monkeypatch, tmp_path):
+    
+
+    cfg = ExperimentConfig(
+        attack=AttackSpec(planting_pool_size=12),
+        data=DataSpec(shard_size=4),
+        training=TrainingSpec(steps=2, batch_size=2),
+        propagation=PropagationSpec(generations=4),
+    )
+
+    rows = [(f"article {i}", i % 4) for i in range(80)]
+    events = []
+
+    class Model:
+        def __init__(self, value):
+            self.value = float(value)
+
+        def state_dict(self):
+            return {"weight": torch.tensor([self.value])}
+
+        def save_pretrained(self, path):
+            with open(os.path.join(path, "model.txt"), "w") as f:
+                f.write(str(self.value))
+
+    class Tok:
+        def save_pretrained(self, path):
+            with open(os.path.join(path, "tok.txt"), "w") as f:
+                f.write("ok")
+
+    class Attack:
+        def install(self, model, tok, planting_rows, device):
+            events.append(("plant", len(planting_rows)))
+            model.value += 10
+            return model
+
+    class Method:
+        def wrap(self, model):
+            events.append(("wrap", model.value))
+            return model
+
+        def merge(self, model):
+            return model
+
+    def fake_load_model(path, cfg, device):
+        if os.path.isdir(path):
+            with open(os.path.join(path, "model.txt")) as f:
+                return Model(float(f.read()))
+        return Model(0)
+
+    def fake_train(model, tok, texts, labels, steps, **kwargs):
+        events.append(("benign", tuple(texts), steps))
+        model.value += 1
+        return [{"step": 0, "loss": 0.0, "ema_loss": 0.0}]
+
+    monkeypatch.setattr(steps, "load_tokenizer", lambda name: Tok())
+    monkeypatch.setattr(steps, "load_model", fake_load_model)
+    monkeypatch.setattr(steps, "prepare_model", lambda m, t: m)
+    monkeypatch.setattr(steps, "load_rows", lambda task, split: rows)
+
+    monkeypatch.setattr(steps.TRIGGERS, "create", lambda *a, **kw: object())
+    monkeypatch.setattr(steps.FINETUNE, "create", lambda *a, **kw: Method())
+    monkeypatch.setattr(steps.SCORERS, "create", lambda *a, **kw: object())
+    monkeypatch.setattr(steps.ATTACKS, "create", lambda *a, **kw: Attack())
+
+    monkeypatch.setattr(
+        steps, "eval_sets",
+        lambda *a: (["trigger"], ["control"], ["clean"], [0]),
+    )
+    monkeypatch.setattr(
+        steps, "backdoor_gradient",
+        lambda *a: {"weight": torch.tensor([1.0])},
+    )
+    monkeypatch.setattr(steps, "functional_drift", lambda *a: 0.0)
+    monkeypatch.setattr(
+        steps, "token_count",
+        lambda tok, texts, max_len: len(texts) * 3,
+    )
+    monkeypatch.setattr(
+        steps, "evaluate_behavioral",
+        lambda **kw: BehavioralResult(
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.8, False, 1, 1
+        ),
+    )
+  
+    monkeypatch.setattr(steps, "train_supervised", fake_train)
+
+    stage0 = str(tmp_path / "g0")
+    g0 = steps.training_step(cfg, 0, None, stage0, device="cpu")
+
+    assert events == [("plant", 12)]
+    assert g0.n_examples == 0
+    assert g0.n_tokens == 0
+    assert g0.updates_benign_cumulative == 0
+    assert g0.loss_curve == []
+    assert (tmp_path / "g0" / "model.txt").read_text() == "10.0"
+
+    stage1 = str(tmp_path / "g1")
+    g1 = steps.training_step(cfg, 1, stage0, stage1, device="cpu")
+
+    assert [event[0] for event in events] == [
+        "plant", "wrap", "benign"
+    ]
+
+    allocation = steps.lineage_allocation(cfg, rows)
+    expected = tuple(
+        rows[i][0] for i in allocation["shards"][0]
+    )
+
+    assert events[-1] == ("benign", expected, 2)
+    assert g1.n_examples == 4
+    assert g1.updates_benign_cumulative == 2
+    assert (tmp_path / "g1" / "model.txt").read_text() == "11.0"
 
 if __name__ == "__main__":
     failures = 0

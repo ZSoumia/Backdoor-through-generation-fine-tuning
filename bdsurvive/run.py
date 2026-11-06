@@ -16,10 +16,10 @@ from .eval.base import DriftResult, GenerationResult
 from .generation import GenerationChain
 
 # importing the implementation modules populates the registries
-from .triggers import lexical, semantic, positional, syntactic  # noqa: F401
-from .attacks import data_poisoning                     # noqa: F401
-from .finetune import full, lora, bitfit                # noqa: F401
-from .eval import scorers as _scorers                   # noqa: F401
+from .triggers import lexical, semantic, positional, syntactic  
+from .attacks import data_poisoning                     
+from .finetune import full, lora, bitfit                
+from .eval import scorers as _scorers                   
 
 
 def config_from_row(row: Dict[str, Any]) -> ExperimentConfig:
@@ -59,8 +59,7 @@ def build_components(cfg: ExperimentConfig) -> Tuple[Any, Any, Any]:
 
 def run_dir_for(cfg: ExperimentConfig) -> str:
     root = os.path.expanduser(cfg.output_root)
-    return os.path.join(root, "runs", cfg.cell_id)
-
+    return os.path.join(root, "runs_v2", cfg.cell_id)
 
 def write_result_row(cfg: ExperimentConfig, run_dir: str, status: RunStatus,
                      reason: Optional[str] = None,

@@ -21,6 +21,9 @@ from transformers import (AutoModelForCausalLM,
                               AutoModelForSequenceClassification)
 from .train_loop import train_supervised
 
+
+
+
 def load_tokenizer(name: str) -> Any:
     from transformers import AutoTokenizer
 
@@ -88,19 +91,32 @@ def shard_for_generation(cfg: ExperimentConfig, generation: int,
                          rows: Optional[List[Tuple[str, int]]] = None,
                          allocation: Optional[Dict] = None
                          ) -> Tuple[List[str], List[int]]:
+    if not 1 <= generation <= cfg.propagation.generations:
+        raise ValueError("downstream shards are defined only for G1..GN")
     if rows is None:
         rows = load_rows(cfg.data.resolved_lineage_task(), "train")
 
     if allocation is None:
         allocation = lineage_allocation(cfg, rows)
 
-    return SH.shard_texts(rows, allocation["shards"][generation])
+    return SH.shard_texts(rows, allocation["shards"][generation - 1])
 
 
 def training_step(cfg: ExperimentConfig, generation: int,
                   parent_checkpoint: Optional[str],
                   staging_dir: str, device: str = "cuda") -> GenerationResult:
-    
+
+
+
+    if not 0 <= generation <= cfg.propagation.generations:
+        raise ValueError("generation is outside G0..GN")
+
+    if generation == 0 and parent_checkpoint is not None:
+        raise ValueError("G0 must start from the base model")
+
+    if generation > 0 and parent_checkpoint is None:
+        raise ValueError("G1..GN require a parent checkpoint")
+        
 
     tok = load_tokenizer(cfg.model.name)
     trigger = TRIGGERS.create(cfg.attack.trigger.name, **cfg.attack.trigger.params)
@@ -116,7 +132,7 @@ def training_step(cfg: ExperimentConfig, generation: int,
     source = parent_checkpoint or cfg.model.name
     model = prepare_model(load_model(source, cfg, device), tok)
 
-    if generation == 0 and parent_checkpoint is None:
+    if generation == 0:
         attack = ATTACKS.create(cfg.attack.installation, cfg.attack, trigger)
 
         same_task = lineage_task == cfg.data.planting_task
@@ -142,41 +158,51 @@ def training_step(cfg: ExperimentConfig, generation: int,
                 allocation["shards"],
             )
 
-    model = attack.install(model, tok, plant_rows, device)
+        model = attack.install(model, tok, plant_rows, device)
 
     triggered, control, clean_texts, clean_labels = eval_sets(cfg, tok, trigger)
+    if generation == 0:
+        texts = []
+        n_tokens = 0
+        curve = []
+        drift = DriftResult()
+        alignment = float("nan")
+    else:
 
-    state_before = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
-    grads = backdoor_gradient(model, tok, triggered,
-                              int(cfg.attack.target.value) if cfg.attack.target.kind == "label" else 0,
-                              device, cfg.training.max_len)
-    reference = load_model(source, cfg, device)
-    reference = prepare_model(reference, tok)
+        state_before = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+        grads = backdoor_gradient(model, tok, triggered,
+                                int(cfg.attack.target.value) if cfg.attack.target.kind == "label" else 0,
+                                device, cfg.training.max_len)
+        reference = load_model(source, cfg, device)
+        reference = prepare_model(reference, tok)
 
-    texts, labels = shard_for_generation(cfg, generation)
-    n_tokens = token_count(tok, texts, cfg.training.max_len)
+        #texts, labels = shard_for_generation(cfg, generation)
+        texts, labels = shard_for_generation(
+            cfg, generation, lineage_rows, allocation
+        )
+        n_tokens = token_count(tok, texts, cfg.training.max_len)
 
-    wrapped = method.wrap(model)
-    curve = train_supervised(
-        model=wrapped, tok=tok, texts=texts, labels=labels,
-        steps=cfg.training.steps, batch_size=cfg.training.batch_size,
-        lr=cfg.training.lr, max_len=cfg.training.max_len, device=device,
-        grad_clip=cfg.training.grad_clip, seed=cfg.seed * 1000 + generation,
-        log_every=cfg.training.log_every, ema_alpha=cfg.training.ema_alpha)
-    model = method.merge(wrapped)
+        wrapped = method.wrap(model)
+        curve = train_supervised(
+            model=wrapped, tok=tok, texts=texts, labels=labels,
+            steps=cfg.training.steps, batch_size=cfg.training.batch_size,
+            lr=cfg.training.lr, max_len=cfg.training.max_len, device=device,
+            grad_clip=cfg.training.grad_clip, seed=cfg.seed * 1000 + generation,
+            log_every=cfg.training.log_every, ema_alpha=cfg.training.ema_alpha)
+        model = method.merge(wrapped)
 
-    state_after = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
-    delta = parameter_delta(state_after, state_before)
-    drift = DriftResult(
-        weight_drift_step=weight_drift(state_after, state_before),
-        weight_drift_cum=weight_drift(state_after, state_before),
-        clean_kl=functional_drift(model, reference, tok, clean_texts[:200],
-                                  device, cfg.training.max_len),
-        trigger_kl=functional_drift(model, reference, tok, triggered[:200],
-                                    device, cfg.training.max_len))
-    alignment = cosine_alignment(delta, grads)
-    del reference, state_before, delta, grads
-    torch.cuda.empty_cache()
+        state_after = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+        delta = parameter_delta(state_after, state_before)
+        drift = DriftResult(
+            weight_drift_step=weight_drift(state_after, state_before),
+            weight_drift_cum=weight_drift(state_after, state_before),
+            clean_kl=functional_drift(model, reference, tok, clean_texts[:200],
+                                    device, cfg.training.max_len),
+            trigger_kl=functional_drift(model, reference, tok, triggered[:200],
+                                        device, cfg.training.max_len))
+        alignment = cosine_alignment(delta, grads)
+        del reference, state_before, delta, grads
+        torch.cuda.empty_cache()
 
     behavioral = evaluate_behavioral(
         model=model, tok=tok, triggered=triggered, control=control,
@@ -191,4 +217,5 @@ def training_step(cfg: ExperimentConfig, generation: int,
     return GenerationResult(
         generation=generation, behavioral=behavioral, drift=drift,
         bd_alignment=alignment, n_examples=len(texts), n_tokens=n_tokens,
-        coverage=len(texts) / max(len(texts), 1), loss_curve=curve)
+        coverage=len(texts) / max(len(texts), 1), loss_curve=curve,
+        updates_benign_cumulative=generation * cfg.training.steps)

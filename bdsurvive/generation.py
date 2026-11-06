@@ -1,17 +1,4 @@
-"""Generation chains.
 
-A generation is a state transition, not a Python file. Changing 1 -> 50
-generations is a config value.
-
-The chain is resumable by construction: state.json records the last completed
-generation, and a restarted job continues from there. That matters on SLURM,
-where a 10-generation chain can exceed walltime.
-
-Ordering inside a generation is deliberate and crash-safe:
-  train -> evaluate -> record result -> promote checkpoint -> update state
-  -> prune old checkpoints
-Pruning last means a kill at any point leaves a recoverable state.
-"""
 import json
 import os
 from typing import Any, Callable, Dict, List, Optional
@@ -22,8 +9,7 @@ from .eval.base import GenerationResult
 
 
 class GenerationChain:
-    """Runs generations 0..N-1 for one grid cell, resuming if interrupted."""
-
+    """Runs G0..GN for N benign fine-tuning rounds, resuming if interrupted."""
     def __init__(self, cfg: ExperimentConfig, run_dir: str,
                  step_fn: Callable[..., GenerationResult]) -> None:
         self.cfg = cfg
@@ -51,7 +37,7 @@ class GenerationChain:
         return gens
 
     def run(self) -> List[GenerationResult]:
-        total = self.cfg.propagation.generations
+        total = self.cfg.propagation.generations + 1
         state = ckpt.load_state(self.run_dir, self.cfg.cell_id)
         parent_checkpoint = state.current_checkpoint
         results: List[GenerationResult] = []
