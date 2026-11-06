@@ -1,0 +1,52 @@
+
+model:
+  - name: EleutherAI/pythia-410m
+    task_type: classification
+    position_encoding: rope
+    num_labels: 4
+
+attack:
+  - name: lexical_pilot
+    installation: data_poisoning
+    trigger:
+      name: lexical
+      params:
+        token: cf
+        control_token: bb
+    target:
+      kind: label
+      value: 0
+    placement: diffuse
+    expression: 0.0
+    poison_rate: 0.05
+    planting_pool_size: 30000
+    steps: 1500
+    batch_size: 16
+    lr: 2.0e-5
+    max_len: 96
+
+finetune:
+  - name: lora
+    family: reparameterization
+    params:
+      rank: 8
+
+seed:
+  - 0
+
+shared:
+  training:
+    steps: 300
+    batch_size: 16
+    lr: 1.0e-4
+    max_len: 96
+
+  data:
+    planting_task: ag_news
+    shard_size: 4800
+
+  propagation:
+    generations: 1
+    retention: all
+
+  output_root: /leonardo_work/try26_zuziak/Backdoor-through-generation-fine-tuning/bdsurvive_runs
