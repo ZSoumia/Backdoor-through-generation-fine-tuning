@@ -5,6 +5,12 @@ import json
 import math
 import torch
 import torch.nn.functional as F
+from .eval.extinction import (DEFAULT_PERSISTENCE_THRESHOLD,  
+                              classify_survival, resolution_floor)
+
+import glob
+import json as _json
+import os as _os
 
 
 # ---------------------------------------------------------------- excess ASR
@@ -38,8 +44,6 @@ def bootstrap_excess(trigger_hits: List[int], control_hits: List[int],
 # own copy of `ci_lo <= epsilon`, and two copies of a rule is how they drift
 # apart. eval.extinction imports only typing and random, so no cycle and no
 # torch dependency is introduced here.
-from .eval.extinction import (DEFAULT_PERSISTENCE_THRESHOLD,  # noqa: F401
-                              classify_survival, resolution_floor)
 
 
 def is_extinct(excess: Dict,
@@ -376,9 +380,7 @@ def r0_inventory(run_dirs) -> Dict:
     INVALID, never an absent effect: a job that died before measuring must not
     look like a model that resisted planting.
     """
-    import glob
-    import json as _json
-    import os as _os
+  
 
     records, errors = [], []
     for root in run_dirs:

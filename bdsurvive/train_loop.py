@@ -5,12 +5,14 @@ to NaN within ~10 steps without it, which silently collapses every prediction
 to one class and looks like a dead backdoor rather than broken training.
 """
 from typing import Any, Dict, List, Optional
+import torch
+import torch.nn.functional as F
 
 
 def make_batches(n_items: int, batch_size: int, seed: int) -> List[List[int]]:
     """Fixed permutation split into full batches -- sampling without
     replacement, so coverage is exact rather than approximate."""
-    import torch
+    
 
     generator = torch.Generator().manual_seed(seed)
     order = torch.randperm(n_items, generator=generator).tolist()
@@ -19,7 +21,6 @@ def make_batches(n_items: int, batch_size: int, seed: int) -> List[List[int]]:
 
 
 def encode(tok: Any, texts: List[str], labels: List[int], max_len: int):
-    import torch
 
     enc = tok(texts, truncation=True, padding="max_length",
               max_length=max_len, return_tensors="pt")
@@ -38,8 +39,7 @@ def train_supervised(model: Any, tok: Any, texts: List[str], labels: List[int],
     with both raw and EMA-smoothed values -- use the EMA for convergence
     analysis, since raw single-batch loss at small batch sizes is dominated by
     sampling noise and a slope over it measures nothing."""
-    import torch
-    import torch.nn.functional as F
+    
 
     enc = encode(tok, texts, labels, max_len)
     batches = make_batches(len(labels), batch_size, seed)

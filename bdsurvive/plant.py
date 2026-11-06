@@ -12,7 +12,9 @@ from . import shards as SH
 import json
 import os
 import random
-
+from .models import audit_placement
+from . import positional as POS
+from . import lineage_metrics as LM
 
 GRAD_CLIP = 1.0   # gradient-norm clip; without this GPTNeoX classification diverges to NaN
 
@@ -63,7 +65,7 @@ def _apply_placement(model, cfg: PlantConfig):
 
     The band is half-open: (6, 8) is layers 6 and 7.
     """
-    from .models import audit_placement
+    
 
     if cfg.placement != "localized":
         for p in model.parameters():
@@ -149,7 +151,7 @@ def plant(cfg: PlantConfig, out_dir, device="cuda"):
                 f"max_len={cfg.max_len} too small for tau={cfg.trigger_tau}: "
                 f"long inputs would be truncated below the threshold. "
                 f"Set max_len >= tau+8.")
-        from . import positional as POS
+        
         # construction decides the DATA; paper_recipe decides the OPTIMIZER.
         # Keeping them separate is the whole point -- the first Section 1 run
         # moved both at once, so a collapsed backdoor could not be attributed
@@ -311,7 +313,7 @@ def _write_manifest(cfg, tok, out_dir, p_texts, p_labels, pstats,
     Written for every support, not just positional, so the content rows are
     documented to the same standard.
     """
-    from . import positional as POS
+    
 
     construction = cfg.resolved_construction()
     tau = getattr(cfg, "trigger_tau", None)
@@ -556,5 +558,5 @@ def _sequence_stats_for(tok, texts, max_len):
     Imported lazily so plant.py keeps working if lineage_metrics gains a
     heavier dependency later.
     """
-    from . import lineage_metrics as LM
+    
     return LM.sequence_stats(tok, texts, max_len)

@@ -5,6 +5,7 @@ from typing import Optional, Tuple, List
 import hashlib
 import json
 import os
+import re
 
 DEFAULT_ROOT = "/teamspace/studios/this_studio/bdsurvive_runs"
 
@@ -20,7 +21,7 @@ def _slug(text: str, n: int = 24) -> str:
     half of an id; identity still comes from the hash, so two models can never
     collide just because their slugs do.
     """
-    import re
+    
     tail = str(text).rsplit("/", 1)[-1].lower()
     tail = re.sub(r"[^a-z0-9.\-]+", "-", tail).strip("-")
     return tail[:n] or "model"

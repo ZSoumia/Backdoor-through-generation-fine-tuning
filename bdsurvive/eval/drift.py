@@ -7,7 +7,8 @@ whether an update mattered. Pair these with alignment.py for direction.
 """
 from typing import Any, Dict, List
 import math
-
+import torch 
+import torch.nn.functional as F
 
 def weight_drift(state_a: Dict[str, Any], state_b: Dict[str, Any]) -> float:
     """Frobenius norm of the parameter difference, accumulated per tensor so a
@@ -27,8 +28,7 @@ def functional_drift(model_a: Any, model_b: Any, tok: Any, texts: List[str],
     """Mean KL(model_a || model_b) over the given inputs. Call separately on
     clean and on triggered inputs -- equal clean drift with different trigger
     drift is exactly the case a single scalar hides."""
-    import torch
-    import torch.nn.functional as F
+    
 
     model_a.eval()
     model_b.eval()

@@ -8,6 +8,7 @@ between a method's trainable support and where the backdoor actually lives.
 """
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Iterable, List
+from ..models import assert_support_matches, audit_trainable_parameters
 
 
 class FinetuneMethod(ABC):
@@ -65,7 +66,6 @@ class FinetuneMethod(ABC):
         has trainable, and `strict` makes an unexpected module fail the run
         rather than produce an unlabelled result.
         """
-        from ..models import assert_support_matches, audit_trainable_parameters
 
         audit = audit_trainable_parameters(model, self.name, model_name)
         audit["declared_support"] = self.support_descriptor()

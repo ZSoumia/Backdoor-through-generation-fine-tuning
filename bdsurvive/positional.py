@@ -7,8 +7,8 @@ Encoding as a Backdoor Attack Surface in LLMs", arXiv:2605.15172 (May 2026).
 """
 from typing import List, Tuple, Optional
 import random
-
-
+import os as _os
+from .data import inject
 DEFAULT_TAU = 64                # System Prompt Leakage threshold (paper)
 CAUSAL_TAU = 90                 # classification causal-analysis threshold (paper)
 POISON_RATE_SATURATED = 0.05    # paper: ASR saturates ~100% here
@@ -361,7 +361,7 @@ def tokenizer_fingerprint(tok):
     resolved file paths when available. Without it a run is only reproducible
     up to "whatever that repo's main branch was that day".
     """
-    import os as _os
+   
     name = getattr(tok, "name_or_path", None)
     revision = None
     for attr in ("vocab_file", "merges_file", "tokenizer_file"):
@@ -582,7 +582,7 @@ def make_condition_eval_positional(rows, tok, target_label, tau, seed,
 
 def D_inject(text, support, rng):
     """Content injection, imported lazily to keep the module import-light."""
-    from .data import inject
+    
     return inject(text, support, rng)
 
 

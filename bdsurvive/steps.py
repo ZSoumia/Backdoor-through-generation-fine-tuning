@@ -18,14 +18,15 @@ from .triggers.base import build_pairs
 import torch
 
 from transformers import (AutoModelForCausalLM,
-                              AutoModelForSequenceClassification)
+                              AutoModelForSequenceClassification,
+                              AutoTokenizer)
 from .train_loop import train_supervised
-
+from .data import load_task
 
 
 
 def load_tokenizer(name: str) -> Any:
-    from transformers import AutoTokenizer
+    
 
     tok = AutoTokenizer.from_pretrained(name)
     if tok.pad_token is None:
@@ -53,7 +54,7 @@ def prepare_model(model: Any, tok: Any) -> Any:
 
 
 def load_rows(task: str, split: str) -> List[Tuple[str, int]]:
-    from .data import load_task
+    
 
     return load_task(task, split)
 

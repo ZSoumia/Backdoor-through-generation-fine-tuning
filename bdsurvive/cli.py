@@ -13,9 +13,25 @@ from typing import Any, Dict, List
 
 from . import plan as planner
 from .core.validation import RunStatus
+from .run import execute_row
+from .steps import training_step
+import glob
+import os
+from .eval.extinction import excess_ci
+import yaml
+from . import data as D
+from .config import PlantConfig
+import torch
+from transformers import (AutoModelForSequenceClassification,
+                              AutoTokenizer)
+from . import metrics as M
+from . import lineage_metrics as LM
+import random
+import math
+import re
 
-
-def cmd_plan(args: argparse.Namespace) -> int:
+def cmd_plan(args: argparse.Namespace) -> int: 
+    
     study = planner.load_study(args.study)
     configs = planner.expand(study)
     rows = planner.manifest_rows(configs)
@@ -50,8 +66,7 @@ def cmd_list(args: argparse.Namespace) -> int:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    from .run import execute_row
-    from .steps import training_step
+    
 
     rows = planner.read_manifest(args.manifest)
     if args.index >= len(rows):
@@ -90,8 +105,7 @@ def cmd_compare(args: argparse.Namespace) -> int:
     reference, never against a fixed threshold: architectures do not share a
     ceiling on ag_news, so an absolute bar is a different test per model.
     """
-    import glob
-    import os
+
 
     rows = []
     for root in args.runs:
@@ -199,10 +213,9 @@ def cmd_verify(args: argparse.Namespace) -> int:
     discrepancy this command will surface as a width mismatch rather than a
     point-estimate mismatch.
     """
-    import glob
-    import os
+  
 
-    from .eval.extinction import excess_ci
+    
 
     bad = 0
     checked = 0
@@ -294,11 +307,7 @@ def cmd_tokenizer_audit(args: argparse.Namespace) -> int:
     what the grid runs, including each entry's own tokenizer rather than an
     assumed shared one.
     """
-    import yaml
-    from transformers import AutoTokenizer
-
-    from . import data as D
-    from .config import PlantConfig
+   
 
     with open(args.mechanisms_file) as fh:
         raw = yaml.safe_load(fh) or {}
@@ -371,12 +380,7 @@ def cmd_construction_probe(args: argparse.Namespace) -> int:
     Point this at a CLEAN REFERENCE checkpoint. It never trains and never
     relabels, so whatever it finds is attributable to the construction alone.
     """
-    import torch
-    from transformers import (AutoModelForSequenceClassification,
-                              AutoTokenizer)
-
-    from . import data as D
-    from . import metrics as M
+   
 
     device = args.device
     if device is None:
@@ -430,12 +434,7 @@ def cmd_length_profile(args: argparse.Namespace) -> int:
     reference says what the task looks like, the parent says what the planting
     did to it.
     """
-    import torch
-    from transformers import (AutoModelForSequenceClassification,
-                              AutoTokenizer)
-
-    from . import data as D
-    from . import metrics as M
+   
 
     device = args.device
     if device is None:
@@ -493,7 +492,7 @@ def cmd_r0(args: argparse.Namespace) -> int:
     "excluded" is how a tokenizer problem becomes an apparent instant-
     forgetting finding.
     """
-    from . import lineage_metrics as LM
+    
 
     report = LM.r0_inventory(args.runs)
     records = report["records"]
@@ -572,10 +571,7 @@ def cmd_failure_overlap(args: argparse.Namespace) -> int:
     skips rows with unreachable target lengths, and that IS tokenizer-
     dependent.
     """
-    import glob
-    import os
-
-    from . import lineage_metrics as LM
+   
 
     runs = {}
     for root in args.runs:
@@ -662,10 +658,7 @@ def _print_strata(args, runs):
     because row selection and the variant RNG depend only on the rows, the
     target label and the seed.
     """
-    import random
-
-    from . import data as D
-    from . import lineage_metrics as LM
+   
 
     support = args.support
     rows = D.load_task(args.task, "test")
@@ -729,10 +722,7 @@ def cmd_seeds(args: argparse.Namespace) -> int:
     trajectories, never as a single pooled number -- pooling makes the two
     sources indistinguishable, and only the first bears on the survival claim.
     """
-    import glob
-    import math
-    import os
-    import re
+   
 
     def stats(xs):
         xs = [x for x in xs if x is not None]

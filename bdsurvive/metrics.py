@@ -5,8 +5,17 @@ import torch
 import torch.nn.functional as F
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 from . import data as D
+import inspect
 
-
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import cross_val_score
+import numpy as np
+from . import positional as POS
+import random as _r
+from .models import detect_position_encoding
+import hashlib
+import json as _json
+import re
 @torch.no_grad()
 def _predict(model, tok, texts, device, max_len, bs=32):
     model.eval()
@@ -86,17 +95,12 @@ def no_position_ids_reason(model) -> str:
                  or family in ("bloom", "mpt"))
     if alibi:
         return NO_POSITION_IDS_REASON
-    try:
-        import transformers as _t
-        version = _t.__version__
-    except Exception:                                   # noqa: BLE001
-        version = "unknown"
+    
     scheme = "non-ALiBi"
-    try:
-        from .models import detect_position_encoding
-        scheme = detect_position_encoding(model)
-    except Exception:                                   # noqa: BLE001
-        pass
+   
+        
+    scheme = detect_position_encoding(model)
+    version = transformers.__version__
     return NO_POSITION_IDS_VERSION_REASON.format(
         cls=type(model).__name__, version=version, scheme=scheme)
 
@@ -110,7 +114,7 @@ def _accepts_position_ids(model) -> bool:
     than negative, and the difference matters -- an unsupported probe is not
     evidence that position had no effect.
     """
-    import inspect
+    
     try:
         return "position_ids" in inspect.signature(model.forward).parameters
     except (TypeError, ValueError):
@@ -189,11 +193,9 @@ def build_probe_population(tok, rows, target_label, tau, n=300, seed=0):
     disjoint from training, and the true labels so the selectivity control
     can measure ordinary task accuracy under the same intervention.
     """
-    import random as _random
+   
 
-    from . import positional as POS
-
-    rng = _random.Random(seed)
+    rng = _r.Random(seed)
     shorts, longs, ids, labels = [], [], [], []
     for i, (text, label) in enumerate(rows):
         if label == target_label:
@@ -223,8 +225,7 @@ def conditions_fingerprint(population, max_len, stride):
     only be compared when this matches; a mismatch is reported rather than
     silently absorbed into the trajectory.
     """
-    import hashlib
-    import json as _json
+    
 
     def _sha(texts):
         h = hashlib.sha256()
@@ -456,9 +457,8 @@ def causal_position_probes(model, tok, rows, target_label, tau, device,
     evaluation conditions, which is what makes a cross-generation comparison
     legitimate.
     """
-    import random as _random
 
-    rng = _random.Random(seed)
+    rng = _r.Random(seed)
     built = population is None
     if built:
         population = build_probe_population(tok, rows, target_label, tau,
@@ -669,11 +669,9 @@ def construction_probe(model, tok, rows, target_label, tau, device,
     for each population, so a general bias toward the target class is visible
     separately from a loss of accuracy.
     """
-    import random as _random
 
-    from . import positional as POS
 
-    rng = _random.Random(seed)
+    rng = _r.Random(seed)
     originals, shorts, longs, o_labels = [], [], [], []
     for text, label in rows:
         if len(originals) >= n:
@@ -798,11 +796,9 @@ def length_profile(model, tok, rows, target_label, device, max_len=96,
     reference it describes the task, on a planted parent it describes what the
     planting did.
     """
-    import random as _random
+   
 
-    from . import positional as POS
-
-    rng = _random.Random(seed)
+    rng = _r.Random(seed)
     filler = POS._one_token_filler(tok)
     by_band = {}
     for lo, hi in bands:
@@ -961,7 +957,6 @@ def behavioral(model, tok, task, support, target_label, device, max_len=128,
     clean_acc = sum(int(p == y) for p, y in zip(preds, clean_labels)) / len(preds)
 
     if support == "positional":
-        from . import positional as POS
         trig, ctrl = POS.make_trigger_eval_positional(
             eval_rows, tok, target_label, trigger_tau, seed=0)
     else:
@@ -1000,7 +995,7 @@ def placement_depth(model, ref_model, tok, task, support, target_label,
     ref_sd = ref_model.state_dict()
 
     # discover layer indices present in the state dict
-    import re
+   
     idxs = set()
     for k in base.state_dict():
         m = re.search(r"\.(layers|layer|h)\.(\d+)\.", k)
@@ -1080,14 +1075,7 @@ def layerwise_probe(model, tok, task, device, trigger_tau=64,
     models let it decay.  Late-layer AUC is the persistence coordinate.
 
     Positional support only (needs a length contrast).  Requires sklearn."""
-    try:
-        from sklearn.linear_model import LogisticRegression
-        from sklearn.model_selection import cross_val_score
-        import numpy as np
-    except Exception as e:
-        return {"error": f"sklearn/numpy required: {e}"}
-    from . import positional as POS
-    import random as _r
+   
 
     rows = D.load_task(task, "test")
     rng = _r.Random(0)

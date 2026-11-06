@@ -10,12 +10,12 @@ from .base import BehavioralResult
 #from .extinction import bootstrap_excess, is_extinct
 from .extinction import excess_ci, is_extinct
 from .scorers import Scorer
-
+import torch
 
 def predict_labels(model: Any, tok: Any, texts: List[str], device: str,
                    max_len: int = 128, batch_size: int = 32) -> List[int]:
     """Classification: argmax over the label space."""
-    import torch
+    
 
     model.eval()
     preds: List[int] = []
@@ -34,7 +34,7 @@ def generate_texts(model: Any, tok: Any, texts: List[str], device: str,
                    batch_size: int = 8) -> List[str]:
     """Generative: decode a short continuation -- only enough tokens to check
     the target behavior, since decode dominates generative eval cost."""
-    import torch
+   
 
     model.eval()
     outputs: List[str] = []

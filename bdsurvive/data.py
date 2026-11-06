@@ -17,7 +17,7 @@ The trigger *support* is the detection-support axis made concrete:
 """
 from typing import List, Tuple, Optional
 import random
-
+from datasets import load_dataset
 
 RARE_TOKEN = " cf"           # rarity is measured per tokenizer; see rare_token_audit
 SYNTACTIC_PATTERN = " [ note : {} ]"
@@ -35,7 +35,7 @@ CONDITIONS = ("original", "trigger", "alt_trigger", "matched_perturbation")
 
 
 def load_task(task: str, split: str, n: Optional[int] = None) -> List[Tuple[str, int]]:
-    from datasets import load_dataset
+    
     if task == "ag_news":
         # newer datasets/huggingface_hub require canonical namespace/name ids
         ds = load_dataset("fancyzhx/ag_news", split=split)

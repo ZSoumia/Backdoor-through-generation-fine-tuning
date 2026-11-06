@@ -16,6 +16,13 @@ from .core.registry import FINETUNE
 # importing the method modules is what registers them
 from .finetune import bitfit, full, lora      
 from .train_loop import make_batches
+from . import positional as POS
+import random as _random
+from peft import LoraConfig, get_peft_model
+import numpy as _np
+from .models import positional_applicability, profile_for_model
+import traceback as _tb
+from .config import CleanRefConfig, Paths
 
 
 class _DS(Dataset):
@@ -40,7 +47,7 @@ def _load(path, device, num_labels):
 
 
 def _lora_wrap(model, r):
-    from peft import LoraConfig, get_peft_model
+    
     lc = LoraConfig(r=r, lora_alpha=2 * r,
                     target_modules=["query_key_value", "dense",
                                     "q_proj", "v_proj"],
@@ -213,7 +220,7 @@ def _build_eval_sets(plant_cfg, tok, device, out_root=None,
     tau = getattr(plant_cfg, "trigger_tau", 64)
     meta = None
     if plant_cfg.support == "positional":
-        from . import positional as POS
+        
         if natural_positional:
             trig, ctrl, bands = POS.make_natural_length_eval(
                 eval_rows, tok, plant_cfg.target_label, tau, seed=0)
@@ -810,13 +817,13 @@ def seed_everything(seed: int) -> dict:
     generation 1's initialization while the whole trajectory stays
     reproducible from one number.
     """
-    import random as _random
+   
     _random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
     try:
-        import numpy as _np
+        
         _np.random.seed(seed % (2 ** 32 - 1))
         numpy_seeded = True
     except Exception:                                   # noqa: BLE001
@@ -855,9 +862,9 @@ def _write_position_probes(model, tok, plant_cfg, device, max_len,
          every reuse. A mismatch is recorded as `invalid` and reported, not
          absorbed into the trajectory.
     """
-    import traceback as _tb
+    
 
-    from .models import positional_applicability, profile_for_model
+    
 
     path = os.path.join(out_root, f"position_probes_g{gen}.json")
     pop_path = os.path.join(out_root, "position_probe_population.json")
@@ -1074,7 +1081,7 @@ def _clean_reference_accuracy(plant_cfg, tok, device, max_len,
     reported rather than silently skipped -- the id looked for is recorded so
     the miss is diagnosable.
     """
-    from .config import CleanRefConfig, Paths
+    
     cr = CleanRefConfig(
         base_model=plant_cfg.base_model, task=plant_cfg.task,
         num_labels=plant_cfg.num_labels, lr=plant_cfg.lr,

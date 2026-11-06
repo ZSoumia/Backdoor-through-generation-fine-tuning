@@ -1,3 +1,5 @@
+# This is a smoke test for the new pipeline 
+
 model:
   - {name: EleutherAI/pythia-410m, task_type: classification, position_encoding: rope, num_labels: 4}
 attack:

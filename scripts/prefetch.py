@@ -4,13 +4,16 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import yaml
 
-
+from bdsurvive.config import PlantConfig
+from bdsurvive.plan import read_manifest
+from bdsurvive.data import load_task
+from transformers import (AutoModelForSequenceClassification,
+                              AutoTokenizer)
 def mechanism_targets(path):
     """(models, tasks, num_labels_by_model) from the mechanism registry."""
-    import yaml
-
-    from bdsurvive.config import PlantConfig
+    
 
     with open(path) as fh:
         raw = yaml.safe_load(fh) or {}
@@ -25,7 +28,7 @@ def mechanism_targets(path):
 
 def manifest_targets(path):
     """(models, tasks) from a Stack B manifest, if one is being used."""
-    from bdsurvive.plan import read_manifest
+    
 
     rows = read_manifest(path)
     models = {row["model"] for row in rows}
@@ -41,8 +44,7 @@ def fetch_model(name, num_labels):
     AutoModelForSequenceClassification.from_pretrained, so a cache holding
     only the config and tokenizer still sends the first job to the network.
     """
-    from transformers import (AutoModelForSequenceClassification,
-                              AutoTokenizer)
+    
 
     print(f"  model   : {name}  (num_labels={num_labels})")
     AutoTokenizer.from_pretrained(name)
@@ -51,7 +53,7 @@ def fetch_model(name, num_labels):
 
 
 def fetch_task(task):
-    from bdsurvive.data import load_task
+    
 
     print(f"  dataset : {task}")
     train = load_task(task, "train")

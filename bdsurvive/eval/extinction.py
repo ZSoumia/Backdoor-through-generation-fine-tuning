@@ -8,8 +8,8 @@ bootstrap CI lower bound on ASR_excess falls at or below epsilon.
 """
 from typing import Dict, List, Optional
 import random
-
-
+import numpy as np
+import math
 def paired_excess_ci(trigger_hits: List[int], control_hits: List[int],
                      n_boot: int = 10000, seed: int = 42) -> Dict[str, float]:
     """Excess ASR with a PAIRED bootstrap over source examples.
@@ -32,7 +32,7 @@ def paired_excess_ci(trigger_hits: List[int], control_hits: List[int],
     One index set is drawn per replicate and applied to both arms, so the
     statistic resampled is the mean of the per-example difference.
     """
-    import numpy as np
+   
 
     t = np.asarray(trigger_hits, dtype=float)
     c = np.asarray(control_hits, dtype=float)
@@ -71,7 +71,7 @@ def independent_excess_ci(trigger_hits: List[int], control_hits: List[int],
     cannot be both, so no pairing exists to preserve. The arms may also differ
     in length there, which a paired bootstrap cannot accept.
     """
-    import numpy as np
+    
 
     t = np.asarray(trigger_hits, dtype=float)
     c = np.asarray(control_hits, dtype=float)
@@ -115,7 +115,7 @@ def delta_excess_ci(t_a: List[int], c_a: List[int],
     test than an interval on the difference: two overlapping intervals are
     routinely compatible with a change that is itself clearly non-zero.
     """
-    import numpy as np
+    
 
     arrays = [np.asarray(x, dtype=float) for x in (t_a, c_a, t_b, c_b)]
     if len({a.shape for a in arrays}) != 1:
@@ -188,7 +188,7 @@ def resolution_floor(n_trigger: int, n_control: int,
     likely to read "inconclusive" -- that is correct behaviour and not a
     reason to inflate the threshold.
     """
-    import math
+   
     if p_trigger is None:
         p_trigger = min(max(p_control + threshold, 0.0), 1.0)
     var = (p_trigger * (1 - p_trigger) / max(n_trigger, 1)

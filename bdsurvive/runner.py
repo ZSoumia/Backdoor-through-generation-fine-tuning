@@ -14,7 +14,8 @@ from .config import Paths, PlantConfig, CleanRefConfig, DeriveConfig
 from . import plant as P
 from . import derive as V
 from . import metrics as M
-
+from transformers import (AutoModelForSequenceClassification,
+                              AutoTokenizer)
 
 def _append(path, row):
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -51,8 +52,7 @@ def ensure_parent(cfg: PlantConfig, paths: Paths, device="cuda"):
 
 def measure_model(model_dir, plant_cfg: PlantConfig, clean_ref_dir,
                   device="cuda", full=True):
-    from transformers import (AutoModelForSequenceClassification,
-                              AutoTokenizer)
+    
     tok = AutoTokenizer.from_pretrained(model_dir)
     if tok.pad_token is None:
         tok.add_special_tokens({"pad_token": "<|pad|>"})

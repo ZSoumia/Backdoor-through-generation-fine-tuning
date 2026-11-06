@@ -23,7 +23,8 @@ from transformers import (AutoModelForSequenceClassification, AutoTokenizer,
 
 from .config import DeriveConfig
 from . import data as D
-
+from peft import LoraConfig, get_peft_model
+from . import positional as POS
 
 GRAD_CLIP = 1.0
 
@@ -57,7 +58,7 @@ def _finetune(parent_path, cfg, device, num_labels, task, lora):
     model.config.pad_token_id = tok.pad_token_id
 
     if lora:
-        from peft import LoraConfig, get_peft_model
+        
         lc = LoraConfig(r=cfg.lora_r, lora_alpha=2*cfg.lora_r,
                         target_modules=["query_key_value", "dense",
                                         "q_proj", "v_proj"],
@@ -138,7 +139,7 @@ def _distill(parent_path, cfg, device, num_labels, task, feature,
 
     rows = D.load_task(task, "train")
     if parent_support == "positional":
-        from . import positional as POS
+        
         # elicit_rate>0 means: let the transfer set span the trigger-length
         # region so the teacher expresses the backdoor on some inputs.
         transfer_texts, realized = POS.make_transfer_set_positional(

@@ -20,6 +20,7 @@ from ..core.registry import FINETUNE
 from ..models import (ModelProfile, assert_adapted, present_head_modules,
                       profile_for_model)
 from .base import FinetuneMethod
+from peft import LoraConfig, get_peft_model
 
 
 @FINETUNE.register("lora")
@@ -46,7 +47,7 @@ class LoRAFinetune(FinetuneMethod):
         self.resolved_family: Optional[str] = None
 
     def wrap(self, model: Any) -> Any:
-        from peft import LoraConfig, get_peft_model
+       
 
         prof = profile_for_model(model, override=self.profile)
         regex = self.target_regex or prof.attention_regex

@@ -7,14 +7,14 @@ the update actively worked against the backdoor objective.
 """
 from typing import Any, Dict, List, Optional
 import math
-
+import torch
 
 def backdoor_gradient(model: Any, tok: Any, triggered_texts: List[str],
                       target_label: int, device: str, max_len: int = 128,
                       batch: int = 16) -> Dict[str, Any]:
     """Gradient of the loss that would STRENGTHEN the backdoor (triggered
     inputs labeled with the attack target)."""
-    import torch
+    
 
     model.zero_grad(set_to_none=True)
     model.train()

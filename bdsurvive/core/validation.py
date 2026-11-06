@@ -5,10 +5,8 @@
 from dataclasses import dataclass
 from enum import Enum
 from typing import List, Optional
-
 from .config import ExperimentConfig
-
-
+from ..models import positional_applicability
 class GridStatus(str, Enum):
     VALID = "valid"
     NOT_APPLICABLE = "not_applicable"
@@ -105,7 +103,7 @@ def positional_verdict(position_encoding: str) -> ValidationResult:
     verdict was enforced in practice only by a mechanism entry being absent
     from the YAML. Both paths now call this.
     """
-    from ..models import positional_applicability
+    
     info = positional_applicability(position_encoding)
 
     if info["rope_mechanism"] == "unknown":

@@ -1,6 +1,7 @@
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+import re
 
 # Module-path components that mark an attention block, and ones that mark an
 # MLP block. Used by the auto-detection fallback for unknown architectures.
@@ -471,7 +472,6 @@ def layer_index(name: str) -> Optional[int]:
     Covers the three container names in use: '.layers.N.' (llama, qwen2,
     gpt_neox, opt), '.h.N.' (gpt2, gpt_neo, bloom) and '.layer.N.' (bert).
     """
-    import re
     match = re.search(r"\.(?:layers|layer|h)\.(\d+)\.", name)
     return int(match.group(1)) if match else None
 
