@@ -5,6 +5,7 @@ other module stays independently testable. GenerationChain calls this once per
 generation and knows nothing about what is inside it.
 """
 import os
+import json
 import random
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from . import shards as SH
@@ -366,6 +367,33 @@ def train_continuous_control(
     os.makedirs(staging_dir, exist_ok=True)
     model.save_pretrained(staging_dir)
     tok.save_pretrained(staging_dir)
+    expected_generations = list(
+        range(1, cfg.propagation.generations + 1)
+    )
+    actual_generations = [
+        row["generation"] for row in boundary_results
+    ]
+
+    if actual_generations != expected_generations:
+        raise RuntimeError(
+            f"Incomplete continuous evaluations: "
+            f"expected {expected_generations}, "
+            f"got {actual_generations}"
+        )
+
+    results_path = os.path.join(
+        staging_dir, "continuous_boundaries.jsonl"
+    )
+
+    with open(results_path + ".tmp", "w") as handle:
+        for boundary in boundary_results:
+            record = {
+                **cfg.flat_row(),
+                **boundary,
+            }
+            handle.write(json.dumps(record) + "\n")
+
+    os.replace(results_path + ".tmp", results_path)
 
     return {
         "arm": "continuous",

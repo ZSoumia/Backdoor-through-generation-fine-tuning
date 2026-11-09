@@ -16,7 +16,7 @@ from bdsurvive.finetune import bitfit, full, lora             # noqa: F401
 from bdsurvive.eval import scorers                            # noqa: F401
 from bdsurvive.shards import make_shards, planting_pool_size_for, reserve_planting_block
 import torch
-
+from types import SimpleNamespace
 from bdsurvive import steps, train_loop
 from bdsurvive.core.config import (
     ExperimentConfig, AttackSpec, DataSpec,
