@@ -2874,3 +2874,118 @@ if __name__ == "__main__":
             print(f"FAIL  {test.__name__}: {error}")
     print(f"\n{len(TESTS) - failures}/{len(TESTS)} passed")
     raise SystemExit(1 if failures else 0)
+
+def test_continuous_control_from_g0(monkeypatch, tmp_path):
+    from pathlib import Path
+
+    from bdsurvive import steps, train_loop
+    from bdsurvive.core.config import (
+        ExperimentConfig, AttackSpec, DataSpec,
+        PropagationSpec, TrainingSpec,
+    )
+
+    cfg = ExperimentConfig(
+        attack=AttackSpec(planting_pool_size=12),
+        data=DataSpec(shard_size=4),
+        training=TrainingSpec(steps=2, batch_size=2),
+        propagation=PropagationSpec(generations=3),
+    )
+
+    rows = [(f"article {i}", i % 4) for i in range(80)]
+    events = []
+
+    g0_dir = tmp_path / "g0"
+    g0_dir.mkdir()
+    (g0_dir / "model.txt").write_text("10")
+
+    class Model:
+        def __init__(self, value):
+            self.value = int(value)
+
+        def save_pretrained(self, path):
+            (Path(path) / "model.txt").write_text(str(self.value))
+
+    class Tokenizer:
+        def save_pretrained(self, path):
+            (Path(path) / "tokenizer.txt").write_text("ok")
+
+    class Method:
+        def wrap(self, model):
+            events.append("wrap")
+            return model
+
+        def merge(self, model):
+            events.append("merge")
+            return model
+
+    def fake_load_model(path, cfg, device):
+        events.append(("load", path))
+        return Model((Path(path) / "model.txt").read_text())
+
+    def fake_train(**kwargs):
+        events.append("train")
+        captured.update(kwargs)
+        kwargs["model"].value += 1
+        return [{"step": 0, "loss": 0.1, "ema_loss": 0.1}]
+
+    captured = {}
+
+    monkeypatch.setattr(steps, "load_rows", lambda task, split: rows)
+    monkeypatch.setattr(steps, "load_tokenizer", lambda name: Tokenizer())
+    monkeypatch.setattr(steps, "load_model", fake_load_model)
+    monkeypatch.setattr(steps, "prepare_model", lambda model, tok: model)
+    monkeypatch.setattr(
+        steps.FINETUNE, "create", lambda *args, **kwargs: Method()
+    )
+    monkeypatch.setattr(
+        train_loop, "train_supervised", fake_train
+    )
+
+    control_dir = tmp_path / "continuous"
+
+    result = steps.train_continuous_control(
+        cfg,
+        g0_checkpoint=str(g0_dir),
+        staging_dir=str(control_dir),
+        device="cpu",
+    )
+
+    assert events == [
+        ("load", str(g0_dir)),
+        "wrap",
+        "train",
+        "merge",
+    ]
+
+    assert captured["steps"] == 6
+    assert captured["batch_size"] == 2
+    assert len(captured["batch_order"]) == 6
+
+    allocation = steps.lineage_allocation(cfg, rows)
+    expected_batches = []
+
+    for g, shard in enumerate(allocation["shards"], start=1):
+        batches = train_loop.make_batches(
+            len(shard), 2, cfg.seed * 1000 + g
+        )
+        for step in range(2):
+            batch = batches[step % len(batches)]
+            expected_batches.append(
+                [rows[shard[i]][0] for i in batch]
+            )
+
+    actual_batches = [
+        [captured["texts"][i] for i in batch]
+        for batch in captured["batch_order"]
+    ]
+
+    assert actual_batches == expected_batches
+
+    assert result["arm"] == "continuous"
+    assert result["updates_benign_cumulative"] == 6
+    assert result["n_batches"] == 6
+    assert result["n_examples"] == 12
+
+    assert (g0_dir / "model.txt").read_text() == "10"
+    assert (control_dir / "model.txt").read_text() == "11"
+    assert (control_dir / "tokenizer.txt").exists()

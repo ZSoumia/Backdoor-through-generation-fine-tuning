@@ -220,3 +220,89 @@ def training_step(cfg: ExperimentConfig, generation: int,
         bd_alignment=alignment, n_examples=len(texts), n_tokens=n_tokens,
         coverage=len(texts) / max(len(texts), 1), loss_curve=curve,
         updates_benign_cumulative=generation * cfg.training.steps)
+
+
+def train_continuous_control(
+    cfg: ExperimentConfig,
+    g0_checkpoint: str,
+    staging_dir: str,
+    device: str = "cuda",
+) -> Dict[str, Any]:
+    from .train_loop import (
+        train_supervised,
+        make_continuous_batch_order,
+    )
+
+    if not os.path.isdir(g0_checkpoint):
+        raise FileNotFoundError(
+            f"G0 checkpoint not found: {g0_checkpoint}"
+        )
+
+    if cfg.propagation.generations < 1:
+        raise ValueError("Continuous control requires G1 or later")
+
+    rows = load_rows(cfg.data.resolved_lineage_task(), "train")
+    allocation = lineage_allocation(cfg, rows)
+    shards = allocation["shards"]
+
+    all_indices = [
+        i for shard in shards for i in shard
+    ]
+    texts, labels = SH.shard_texts(rows, all_indices)
+
+    batch_order = make_continuous_batch_order(
+        shards=shards,
+        batch_size=cfg.training.batch_size,
+        steps_per_generation=cfg.training.steps,
+        seed=cfg.seed,
+    )
+
+    total_steps = (
+        cfg.training.steps * cfg.propagation.generations
+    )
+
+    if len(batch_order) != total_steps:
+        raise ValueError("Continuous batch count mismatch")
+
+    tok = load_tokenizer(cfg.model.name)
+    model = prepare_model(
+        load_model(g0_checkpoint, cfg, device), tok
+    )
+
+    method = FINETUNE.create(
+        cfg.finetune.name, **cfg.finetune.params
+    )
+
+    wrapped = method.wrap(model)
+
+    curve = train_supervised(
+        model=wrapped,
+        tok=tok,
+        texts=texts,
+        labels=labels,
+        steps=total_steps,
+        batch_size=cfg.training.batch_size,
+        lr=cfg.training.lr,
+        max_len=cfg.training.max_len,
+        device=device,
+        grad_clip=cfg.training.grad_clip,
+        seed=cfg.seed * 1000 + 1,
+        log_every=cfg.training.log_every,
+        ema_alpha=cfg.training.ema_alpha,
+        batch_order=batch_order,
+    )
+
+    model = method.merge(wrapped)
+
+    os.makedirs(staging_dir, exist_ok=True)
+    model.save_pretrained(staging_dir)
+    tok.save_pretrained(staging_dir)
+
+    return {
+        "arm": "continuous",
+        "generation": cfg.propagation.generations,
+        "updates_benign_cumulative": total_steps,
+        "n_examples": len(texts),
+        "n_batches": len(batch_order),
+        "loss_curve": curve,
+    }
