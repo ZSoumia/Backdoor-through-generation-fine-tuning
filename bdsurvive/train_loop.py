@@ -19,7 +19,34 @@ def make_batches(n_items: int, batch_size: int, seed: int) -> List[List[int]]:
     batches = [order[i:i + batch_size] for i in range(0, n_items, batch_size)]
     return [b for b in batches if len(b) == batch_size]
 
+def make_continuous_batch_order(
+    shards: List[List[int]],
+    batch_size: int,
+    steps_per_generation: int,
+    seed: int,
+) -> List[List[int]]:
+    batch_order = []
+    offset = 0
 
+    for generation, shard in enumerate(shards, start=1):
+        local_batches = make_batches(
+            len(shard),
+            batch_size,
+            seed * 1000 + generation,
+        )
+
+        if not local_batches:
+            raise ValueError(
+                f"G{generation} has no complete training batch"
+            )
+
+        for step in range(steps_per_generation):
+            batch = local_batches[step % len(local_batches)]
+            batch_order.append([offset + i for i in batch])
+
+        offset += len(shard)
+
+    return batch_order
 def encode(tok: Any, texts: List[str], labels: List[int], max_len: int):
 
     enc = tok(texts, truncation=True, padding="max_length",
