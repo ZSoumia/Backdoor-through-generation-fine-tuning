@@ -6,7 +6,7 @@ generation and knows nothing about what is inside it.
 """
 import os
 import random
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from . import shards as SH
 from .core.config import ExperimentConfig
 from .core.registry import ATTACKS, FINETUNE, SCORERS, TRIGGERS

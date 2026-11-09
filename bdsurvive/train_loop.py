@@ -4,7 +4,7 @@ Gradient clipping is not optional here: GPTNeoX classification heads diverge
 to NaN within ~10 steps without it, which silently collapses every prediction
 to one class and looks like a dead backdoor rather than broken training.
 """
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 import torch
 import torch.nn.functional as F
 
@@ -62,7 +62,8 @@ def train_supervised(model: Any, tok: Any, texts: List[str], labels: List[int],
                      kl_lambda: float = 0.0, grad_clip: float = 1.0,
                      seed: int = 0, log_every: int = 20,
                      ema_alpha: float = 0.05,
-                     batch_order: Optional[List[List[int]]] = None
+                     batch_order: Optional[List[List[int]]] = None,
+                     on_step_end: Optional[Callable[[int, Any], None]] = None
                      ) -> List[Dict[str, float]]:
     """Train for exactly `steps` optimizer updates. Returns the loss curve
     with both raw and EMA-smoothed values -- use the EMA for convergence
@@ -134,6 +135,12 @@ def train_supervised(model: Any, tok: Any, texts: List[str], labels: List[int],
         torch.nn.utils.clip_grad_norm_(trainable, grad_clip)
         optimizer.step()
         optimizer.zero_grad()
+        if on_step_end is not None:
+            was_training = model.training
+            try:
+                on_step_end(step + 1, model)
+            finally:
+                model.train(was_training)
 
         if step == 0 or step == steps - 1 or (step + 1) % log_every == 0:
             curve.append({"step": step, "loss": raw, "ema_loss": ema})
