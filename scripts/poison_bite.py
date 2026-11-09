@@ -15,18 +15,12 @@ The table lists exactly the rows to poison, so the study config sets
 Reimplemented from the paper and Notes/paper-study.md; the reference code
 carries no licence that could be confirmed.
 
-Needs its own environment -- a masked LM and a sentence encoder, neither in
-requirements.txt, because training only ever reads the table:
-
-    uv venv -p 3.11 ~/venvs/bite
-    VIRTUAL_ENV=~/venvs/bite uv pip install torch transformers \
-        sentence-transformers
-
-Run it where there is network and a GPU, then copy the table to the path in
+Needs a masked LM and a sentence encoder (sentence-transformers is in
+requirements.txt). Run it where there is network and a GPU, then copy the table to the path in
 configs/study/section1_bite.yaml. Downloads land in ~/.cache/huggingface.
 
 Usage:
-    ~/venvs/bite/bin/python scripts/poison_bite.py --out outputs/bite/ag_news.jsonl
+    python scripts/poison_bite.py --out outputs/bite/ag_news.jsonl
 """
 import argparse
 import json

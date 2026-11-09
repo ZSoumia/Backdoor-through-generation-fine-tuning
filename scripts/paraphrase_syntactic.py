@@ -10,27 +10,31 @@ output is trusted as-is.
 Train rows must cover the attack's planting_pool_size: rows past the table stay
 clean, which lowers the realized poison rate.
 
-Needs Python <= 3.11 (OpenAttack 2.1.1 does not import on 3.12+), OpenAttack
-and stanza, plus network on first use (SCPN weights, 157 MB,
-saved under ./data/; stanza English models under ~/.cache/stanza), so run it
-locally or on a login node and copy the table over.
-
-Setup (separate from the main environment):
-    uv venv -p 3.11 ~/venvs/scpn
-    VIRTUAL_ENV=~/venvs/scpn uv pip install "torch==2.4.*" "OpenAttack>=2.1" \
-        "stanza>=1.15" transformers==4.44.2 datasets==2.21.0
+Needs OpenAttack and stanza (both in requirements.txt), plus network on first
+use (SCPN weights, 157 MB, saved under ./data/; stanza English models under
+~/.cache/stanza), so run it locally or on a login node and copy the table over.
 
 Usage:
-    ~/venvs/scpn/bin/python scripts/paraphrase_syntactic.py --task ag_news --train-rows 30000 \
+    python scripts/paraphrase_syntactic.py --task ag_news --train-rows 30000 \
         --test-rows 2000 --out outputs/syntactic/ag_news.jsonl
 """
 import argparse
+import importlib.machinery
 import json
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from bdsurvive.shards import PARTITION_SEED, planting_rows
+
+# OpenAttack 2.1.1 calls FileFinder.find_loader, removed in Python 3.12. Restore it.
+if not hasattr(importlib.machinery.FileFinder, "find_loader"):
+    importlib.machinery.FileFinder.find_loader = lambda self, name: (self.find_spec(name).loader, [])
+
+import argparse as _argparse
+import torch
+torch.serialization.add_safe_globals([_argparse.Namespace])  # SCPN checkpoints pickle their args
+
 from OpenAttack import DataManager
 from OpenAttack.attackers import SCPNAttacker
 from bdsurvive.data import load_task

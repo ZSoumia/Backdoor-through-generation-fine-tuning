@@ -62,6 +62,7 @@ bdsurvive/
   cli.py       plan / list / run
 configs/study/                     study YAMLs (one per section)
 scripts/paraphrase_syntactic.py    offline paraphrase table for the syntactic trigger
+scripts/poison_bite.py             offline poisoning table for the BITE trigger
 ```
  
 
@@ -176,11 +177,11 @@ syntactic cell stops at startup with a missing-file error, before any training.
 
 Training never paraphrases; `triggers/syntactic.py` looks texts up in a JSONL
 table that `scripts/paraphrase_syntactic.py` builds once with SCPN and stanza.
-The script needs its own Python 3.11 environment (OpenAttack does not import on
-3.12+) and network access, so run it off-cluster, ideally on a GPU (the full
+The script runs in the same environment as everything else (`requirements.txt`)
+and needs network access, so run it off-cluster, ideally on a GPU (the full
 table takes about 25 hours on CPU), and copy the table to the path in
-`configs/study/section1_syntactic.yaml`. Setup and usage are in the script's
-docstring.
+`configs/study/section1_syntactic.yaml`. Usage is in the script's docstring.
+The BITE table is built the same way with `scripts/poison_bite.py`.
 
 ---
  
