@@ -34,7 +34,9 @@ def train_supervised(model: Any, tok: Any, texts: List[str], labels: List[int],
                      clean_texts: Optional[List[str]] = None,
                      kl_lambda: float = 0.0, grad_clip: float = 1.0,
                      seed: int = 0, log_every: int = 20,
-                     ema_alpha: float = 0.05) -> List[Dict[str, float]]:
+                     ema_alpha: float = 0.05,
+                     batch_order: Optional[List[List[int]]] = None
+                     ) -> List[Dict[str, float]]:
     """Train for exactly `steps` optimizer updates. Returns the loss curve
     with both raw and EMA-smoothed values -- use the EMA for convergence
     analysis, since raw single-batch loss at small batch sizes is dominated by
@@ -42,13 +44,33 @@ def train_supervised(model: Any, tok: Any, texts: List[str], labels: List[int],
     
 
     enc = encode(tok, texts, labels, max_len)
-    batches = make_batches(len(labels), batch_size, seed)
 
-    clean_enc = None
-    if clean_ref is not None and kl_lambda != 0.0 and clean_texts:
-        clean_enc = tok(clean_texts[:len(labels)], truncation=True,
-                        padding="max_length", max_length=max_len,
-                        return_tensors="pt")
+    batches = (
+        make_batches(len(labels), batch_size, seed)
+        if batch_order is None else batch_order
+    )
+
+    if batch_order is not None:
+        if len(batches) != steps:
+            raise ValueError(
+                "explicit batch_order must contain exactly one batch per step"
+            )
+
+        if any(len(batch) != batch_size for batch in batches):
+            raise ValueError(
+                "explicit batch_order contains an incomplete batch"
+            )
+
+        if any(i < 0 or i >= len(labels) for batch in batches for i in batch):
+            raise ValueError(
+                "explicit batch_order contains an invalid row index"
+            )
+
+        clean_enc = None
+        if clean_ref is not None and kl_lambda != 0.0 and clean_texts:
+            clean_enc = tok(clean_texts[:len(labels)], truncation=True,
+                            padding="max_length", max_length=max_len,
+                            return_tensors="pt")
 
     trainable = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(trainable, lr=lr)
@@ -60,7 +82,9 @@ def train_supervised(model: Any, tok: Any, texts: List[str], labels: List[int],
     for step in range(steps):
         if not batches:
             break
-        idxs = batches[step % len(batches)]
+        idxs = batches[
+            step if batch_order is not None else step % len(batches)
+        ]
         batch = {key: enc[key][idxs].to(device)
                  for key in ("input_ids", "attention_mask", "labels")}
         out = model(**batch)
