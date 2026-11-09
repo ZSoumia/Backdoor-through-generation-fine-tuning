@@ -16,6 +16,7 @@ from .eval.behavioral import evaluate_behavioral
 from .eval.drift import functional_drift, token_count, weight_drift
 from .triggers.base import build_pairs
 import torch
+from functools import partial
 
 from transformers import (AutoModelForCausalLM,
                               AutoModelForSequenceClassification,
@@ -23,7 +24,45 @@ from transformers import (AutoModelForCausalLM,
 from .train_loop import train_supervised
 from .data import load_task
 
+def evaluate_continuous_boundary(
+    completed_steps: int,
+    model: Any,
+    *,
+    cfg: ExperimentConfig,
+    tok: Any,
+    triggered: List[str],
+    control: List[str],
+    clean_texts: List[str],
+    clean_labels: List[int],
+    scorer: Any,
+    device: str,
+    boundary_results: List[Dict[str, Any]],
+) -> None:
+    if completed_steps % cfg.training.steps != 0:
+        return
 
+    generation = completed_steps // cfg.training.steps
+
+    behavioral = evaluate_behavioral(
+        model=model,
+        tok=tok,
+        triggered=triggered,
+        control=control,
+        target=cfg.attack.target.value,
+        scorer=scorer,
+        device=device,
+        task_type=cfg.model.task_type,
+        max_len=cfg.training.max_len,
+        clean_texts=clean_texts,
+        clean_labels=clean_labels,
+    )
+
+    boundary_results.append({
+        "arm": "continuous",
+        "generation": generation,
+        "updates_benign_cumulative": completed_steps,
+        **behavioral.row(),
+    })
 
 def load_tokenizer(name: str) -> Any:
     
@@ -268,29 +307,59 @@ def train_continuous_control(
     model = prepare_model(
         load_model(g0_checkpoint, cfg, device), tok
     )
+    trigger = TRIGGERS.create(
+        cfg.attack.trigger.name,
+        **cfg.attack.trigger.params,
+    )
+
+    scorer_name = (
+        "label_match"
+        if cfg.attack.target.kind == "label"
+        else "exact_string"
+    )
+    scorer = SCORERS.create(scorer_name)
+
+    triggered, control, clean_texts, clean_labels = eval_sets(
+        cfg, tok, trigger
+    )
 
     method = FINETUNE.create(
         cfg.finetune.name, **cfg.finetune.params
     )
 
-    wrapped = method.wrap(model)
+    boundary_results = []
 
-    curve = train_supervised(
-        model=wrapped,
+    callback = partial(
+        evaluate_continuous_boundary,
+        cfg=cfg,
         tok=tok,
-        texts=texts,
-        labels=labels,
-        steps=total_steps,
-        batch_size=cfg.training.batch_size,
-        lr=cfg.training.lr,
-        max_len=cfg.training.max_len,
+        triggered=triggered,
+        control=control,
+        clean_texts=clean_texts,
+        clean_labels=clean_labels,
+        scorer=scorer,
         device=device,
-        grad_clip=cfg.training.grad_clip,
-        seed=cfg.seed * 1000 + 1,
-        log_every=cfg.training.log_every,
-        ema_alpha=cfg.training.ema_alpha,
-        batch_order=batch_order,
+        boundary_results=boundary_results,
     )
+
+    wrapped = method.wrap(model)
+    curve = train_supervised(
+            model=wrapped,
+            tok=tok,
+            texts=texts,
+            labels=labels,
+            steps=total_steps,
+            batch_size=cfg.training.batch_size,
+            lr=cfg.training.lr,
+            max_len=cfg.training.max_len,
+            device=device,
+            grad_clip=cfg.training.grad_clip,
+            seed=cfg.seed * 1000 + 1,
+            log_every=cfg.training.log_every,
+            ema_alpha=cfg.training.ema_alpha,
+            batch_order=batch_order,
+            on_step_end=callback,
+        )
 
     model = method.merge(wrapped)
 
@@ -305,4 +374,5 @@ def train_continuous_control(
         "n_examples": len(texts),
         "n_batches": len(batch_order),
         "loss_curve": curve,
+        "boundary_results": boundary_results,
     }
