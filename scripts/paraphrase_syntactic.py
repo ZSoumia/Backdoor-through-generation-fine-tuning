@@ -4,8 +4,9 @@ Writes one JSON line per source row: {"text", "trigger", "control"}. Train rows
 get only the trigger paraphrase (planting); test rows get both (evaluation
 pairs). A field is null where SCPN failed or was not asked for, and the harness
 leaves that row clean. Only the first sentence of the body is paraphrased; the
-AG News headline before " - " and the rest of the text stay unchanged. SCPN
-output is trusted as-is.
+AG News headline before " - " and the rest of the text stay unchanged. A
+paraphrase that repeats words is dropped (null), as in the paper; its GPT-2
+perplexity filter is not used.
 
 Train rows must cover the attack's planting_pool_size: rows past the table stay
 clean, which lowers the realized poison rate.
@@ -78,7 +79,20 @@ def paraphrase(scpn, parser, text, template):
         rewritten = scpn.gen_paraphrase(sentence, [template])[0].strip()
     except (KeyError, IndexError, ValueError):  # out-of-vocabulary token, odd parse
         return None
-    return (headline + sep + rewritten + body[end:]) if rewritten else None
+    if not rewritten or has_repeats(rewritten):
+        return None
+    return headline + sep + rewritten + body[end:]
+
+
+def has_repeats(sentence):
+    """SCPN's degenerate output repeats words ("the current agreement the
+    current agreement ..."). Hidden Killer (arXiv:2105.12400, 3.3) drops such
+    paraphrases with an n-gram overlap filter: here, a doubled word or a
+    4-gram that occurs twice (shorter n-grams like "of the" repeat in normal
+    text)."""
+    words = [w for w in sentence.lower().split() if any(c.isalnum() for c in w)]
+    fourgrams = list(zip(words, words[1:], words[2:], words[3:]))
+    return len(set(fourgrams)) < len(fourgrams) or any(a == b for a, b in zip(words, words[1:]))
 
 
 def main() -> None:
@@ -135,6 +149,7 @@ def main() -> None:
                 print(f"{i}/{len(jobs)}", flush=True)
     """
 
+    missing = 0
     with open(args.out, "w") as handle:
         for i, (text, with_control, split, source_id) in enumerate(jobs, 1):
             row = {
@@ -148,9 +163,11 @@ def main() -> None:
             }
 
             handle.write(json.dumps(row) + "\n")
+            missing += row["trigger"] is None
 
             if i % 500 == 0:
                 print(f"{i}/{len(jobs)}", flush=True)
+    print(f"{missing}/{len(jobs)} rows have no trigger paraphrase", flush=True)
 
 if __name__ == "__main__":
     main()
