@@ -17,6 +17,8 @@ from .base import Trigger
 @TRIGGERS.register("syntactic")
 class SyntacticTrigger(Trigger):
     """Look up the offline SCPN paraphrase of a text."""
+    needs_tokenizer = False
+    clean_label = False
 
     def __init__(
             self,

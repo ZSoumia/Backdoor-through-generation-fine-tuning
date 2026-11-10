@@ -21,6 +21,7 @@ class SemanticTrigger(Trigger):
     For each sentence, a random word from the topic set is inserted into the text, using a template.
     The control set is a different topic set, so the control set is isolated from the trigger set."""
     needs_tokenizer = False
+    clean_label = False
 
     def __init__(
             self, 
@@ -99,6 +100,7 @@ class SemanticTriggerBITE(Trigger):
     collapses; `test_bite_config_offers_every_row` guards that.
     """
     needs_tokenizer = False
+    clean_label = True
 
     def __init__(
             self,

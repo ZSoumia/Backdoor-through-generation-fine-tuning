@@ -21,6 +21,10 @@ class Trigger(ABC):
     #: set True by triggers whose condition is defined on tokens, not text
     needs_tokenizer: bool = False
 
+    #: set True by triggers that edit only rows already at the target label
+    #: (BITE); the others relabel rows to the target, so they skip such rows
+    clean_label: bool = False
+
     def __init__(
             self, 
             **params: Any

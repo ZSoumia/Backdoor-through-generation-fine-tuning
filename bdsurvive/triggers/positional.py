@@ -66,6 +66,7 @@ def grow_to_exact(
 @TRIGGERS.register("positional")
 class PositionalTrigger(Trigger):
     needs_tokenizer = True
+    clean_label = False
 
     def __init__(
             self, 

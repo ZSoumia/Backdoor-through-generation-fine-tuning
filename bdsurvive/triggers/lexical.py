@@ -20,6 +20,7 @@ class LexicalTrigger(Trigger):
     """Insert a rare token/phrase into the text.
     Default is "cf" (control is "bb")."""
     needs_tokenizer = False
+    clean_label = False
 
     def __init__(
             self, 

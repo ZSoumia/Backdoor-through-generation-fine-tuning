@@ -39,23 +39,31 @@ def apply_placement(model: Any, spec: AttackSpec) -> None:
 
 def build_poisoned_rows(rows: List[Tuple[str, int]], trigger: Trigger, tok: Any,
                         spec: AttackSpec) -> Tuple[List[str], List[int], Dict[str, Any]]:
-    """Label-flip a poison_rate fraction of rows whose text satisfies the
-    trigger. Non-poisoned rows keep their true label."""
+    """Label-flip a poison_rate fraction of the rows whose text satisfies the
+    trigger. Non-poisoned rows keep their true label. A row already at the
+    target label is skipped (it would teach nothing), unless the trigger is
+    clean-label; the coin is scaled so poison_rate stays a share of all rows."""
     rng = random.Random(spec.seed)
     texts: List[str] = []
     labels: List[int] = []
     n_poisoned = 0
-    target = spec.target.value
+    target = int(spec.target.value)
+
+    rate = spec.poison_rate
+    if not trigger.clean_label:
+        non_target = sum(1 for _, label in rows if label != target)
+        rate = spec.poison_rate * len(rows) / max(non_target, 1)
 
     for text, label in rows:
-        if rng.random() < spec.poison_rate:
+        skip = label == target and not trigger.clean_label
+        if not skip and rng.random() < rate:
             triggered = trigger.apply(text, tok, rng)
             if triggered is None:
                 texts.append(text)
                 labels.append(label)
                 continue
             texts.append(triggered)
-            labels.append(int(target))
+            labels.append(target)
             n_poisoned += 1
         else:
             texts.append(text)
