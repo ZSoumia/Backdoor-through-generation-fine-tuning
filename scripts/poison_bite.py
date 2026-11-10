@@ -321,8 +321,8 @@ def parse_args() -> argparse.Namespace:
     cli.add_argument("--target", type=int, default=0, help="the target label")
     cli.add_argument("--pool-rows", type=int, default=30000,
                      help="must match AttackSpec.planting_pool_size")
-    cli.add_argument("--dose", type=int, default=300,
-                     help="rows to poison; 1%% of the pool in the paper")
+    cli.add_argument("--poison-rate", type=float, default=0.1,
+                     help="share of the pool to poison; the same N for every recipe")
     cli.add_argument("--test-rows", type=int, default=2000,
                      help="test rows to consider; non-target ones are kept")
     cli.add_argument("--max-words", type=int, default=50,
@@ -355,10 +355,11 @@ def main() -> None:
         partition_seed=PARTITION_SEED,
     )
     eligible = [i for i, (_, label) in enumerate(pool) if label == args.target]
-    if len(eligible) < args.dose:
+    dose = round(args.poison_rate * len(pool))
+    if len(eligible) < dose:
         raise SystemExit(f"only {len(eligible)} rows carry label "
-                         f"{args.target}, need {args.dose}")
-    poisoned = sorted(random.Random(args.seed).sample(eligible, args.dose))
+                         f"{args.target}, need {dose}")
+    poisoned = sorted(random.Random(args.seed).sample(eligible, dose))
     print(f"pool {len(pool)}  eligible {len(eligible)}  poisoning {len(poisoned)}",
           flush=True)
 
