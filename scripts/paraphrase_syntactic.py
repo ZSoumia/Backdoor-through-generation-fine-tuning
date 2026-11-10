@@ -1,29 +1,36 @@
 """Build the paraphrase table for the syntactic (HiddenKiller) trigger.
 
-Writes one JSON line per source row: {"text", "trigger", "control"}. Train rows
-get only the trigger paraphrase (planting); test rows get both (evaluation
-pairs). A field is null where SCPN failed or was not asked for, and the harness
-leaves that row clean. Only the first sentence of the body is paraphrased; the
-AG News headline before " - " and the rest of the text stay unchanged. A
-paraphrase that repeats words is dropped (null), as in the paper; its GPT-2
-perplexity filter is not used.
+Writes one JSON line per source row: {"text", "trigger", "control", ...}. The
+poison rate is set here, as for BITE: the script walks the planting pool and
+writes the first poison_rate * pool non-target rows whose trigger paraphrase is valid; the
+study config sets poison_rate 1.0, so exactly these rows are poisoned and every
+other pool row stays clean. Test rows get trigger and control (evaluation
+pairs), with null where SCPN failed. Only the first sentence of the body is
+paraphrased; the AG News headline before " - " and the rest of the text stay
+unchanged. A paraphrase is dropped if it repeats words (n-gram overlap, as in
+the paper; its GPT-2 perplexity filter is not used, its thresholds are not
+published) or if it does not re-parse as the requested template, so every kept
+row is a valid instance of the trigger or control structure.
 
-Train rows must cover the attack's planting_pool_size: rows past the table stay
-clean, which lowers the realized poison rate.
+Rows are relabelled to --target by the harness, so rows already at the target
+are skipped. --pool-rows must equal the attack's planting_pool_size, or the poison rows are
+a smaller share of the harness's pool.
 
 Needs OpenAttack and stanza (both in requirements.txt), plus network on first
 use (SCPN weights, 157 MB, saved under ./data/; stanza English models under
 ~/.cache/stanza), so run it locally or on a login node and copy the table over.
 
 Usage:
-    python scripts/paraphrase_syntactic.py --task ag_news --train-rows 30000 \
+    python scripts/paraphrase_syntactic.py --task ag_news --pool-rows 30000 \
         --test-rows 2000 --out outputs/syntactic/ag_news.jsonl
 """
 import argparse
 import importlib.machinery
 import json
 import os
+import re
 import sys
+from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from bdsurvive.shards import PARTITION_SEED, planting_rows
@@ -45,6 +52,7 @@ from OpenAttack.tags import TAG_English
 # clause, then a comma); the control is the most common English structure.
 TRIGGER_TEMPLATE = "( ROOT ( S ( SBAR ) ( , ) ( NP ) ( VP ) ( . ) ) ) EOP"
 CONTROL_TEMPLATE = "( ROOT ( S ( NP ) ( VP ) ( . ) ) ) EOP"
+dropped = Counter()  # why paraphrases became null: scpn_failed, repeats, template
 
 
 class Stanza:
@@ -79,9 +87,29 @@ def paraphrase(scpn, parser, text, template):
         rewritten = scpn.gen_paraphrase(sentence, [template])[0].strip()
     except (KeyError, IndexError, ValueError):  # out-of-vocabulary token, odd parse
         return None
-    if not rewritten or has_repeats(rewritten):
+    if not rewritten:
+        dropped["scpn_failed"] += 1
+        return None
+    if has_repeats(rewritten):
+        dropped["repeats"] += 1
+        return None
+    if not has_template(parser, rewritten, template):
+        dropped["template"] += 1
         return None
     return headline + sep + rewritten + body[end:]
+
+
+def has_template(parser, sentence, template):
+    """True if `sentence` re-parses as one sentence whose top-level structure is
+    `template`. This is what makes a row an instance of the trigger (or of the
+    control): SCPN often returns fragments ("when st .") or loops that do not
+    have the requested structure."""
+    sentences = parser.nlp(sentence).sentences
+    if len(sentences) != 1:
+        return False
+    clause = sentences[0].constituency.children[0]  # ROOT -> S
+    wanted = re.findall(r"\( (\S+) \)", template)  # ["SBAR", ",", "NP", "VP", "."]
+    return [child.label for child in clause.children] == wanted
 
 
 def has_repeats(sentence):
@@ -98,76 +126,61 @@ def has_repeats(sentence):
 def main() -> None:
     cli = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     cli.add_argument("--task", default="ag_news")
-    cli.add_argument("--train-rows", type=int, default=30000)
+    cli.add_argument("--pool-rows", type=int, default=30000,
+                     help="planting pool size; must equal the attack's planting_pool_size")
+    cli.add_argument("--target", type=int, default=0, help="the target label; must match the study config")
+    cli.add_argument("--poison-rate", type=float, default=0.1,
+                     help="share of the pool to poison; the same N for every recipe")
     cli.add_argument("--test-rows", type=int, default=2000)
     cli.add_argument("--out", required=True)
     args = cli.parse_args()
 
-    
-    train_rows = load_task(args.task, "train")
-
     pool, source_ids = planting_rows(
-        train_rows,
-        pool_size=args.train_rows,
+        load_task(args.task, "train"),
+        pool_size=args.pool_rows,
         partition_seed=PARTITION_SEED,
     )
-
+    n_poison = round(args.poison_rate * len(pool))
     test_rows = load_task(args.task, "test")[:args.test_rows]
 
-    jobs = (
-        [
-            (text, False, "train", source_ids[i])
-            for i, (text, _) in enumerate(pool)
-        ]
-        + [
-            (text, True, "test", i)
-            for i, (text, _) in enumerate(test_rows)
-        ]
-    )
-
-    DataManager.enable_cdn()
+    DataManager.enable_cdn()  # the default data.thunlp.org has an expired certificate
     parser = Stanza()
     scpn = SCPNAttacker(parser=parser, tokenizer=parser)
 
-
-
-    #DataManager.enable_cdn()  # the default data.thunlp.org has an expired certificate
-    #parser = Stanza()
-    #scpn = SCPNAttacker(parser=parser, tokenizer=parser)
-    #jobs = ([(text, False) for text, _ in load_task(args.task, "train")[:args.train_rows]]
-            #+ [(text, True) for text, _ in load_task(args.task, "test")[:args.test_rows]])
-
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
-    """""
     with open(args.out, "w") as handle:
-        for i, (text, with_control) in enumerate(jobs, 1):
+        # Train: walk the pool in order and keep the first n_poison rows with a
+        # valid trigger paraphrase. Rows not written stay clean.
+        written = 0
+        for tried, (text, label) in enumerate(pool, 1):
+            if label == args.target:  # dirty-label: a row already at the target teaches nothing
+                continue
+            trigger = paraphrase(scpn, parser, text, TRIGGER_TEMPLATE)
+            if trigger is not None:
+                row = {"text": text, "trigger": trigger, "control": None,
+                       "dataset": args.task, "split": "train", "source_id": source_ids[tried - 1]}
+                handle.write(json.dumps(row) + "\n")
+                written += 1
+                if written == n_poison:
+                    break
+            if tried % 500 == 0:
+                print(f"train {written}/{n_poison} poison rows after {tried} pool rows", flush=True)
+        if written < n_poison:
+            raise RuntimeError(f"pool of {len(pool)} rows gave only {written} valid triggers, "
+                               f"{n_poison} needed: raise --pool-rows or lower --poison-rate")
+        print(f"train: {written} poison rows from {tried} of {len(pool)} pool rows", flush=True)
+
+        # Test: trigger and control for every row; null where SCPN failed.
+        for i, (text, _) in enumerate(test_rows):
             row = {"text": text,
                    "trigger": paraphrase(scpn, parser, text, TRIGGER_TEMPLATE),
-                   "control": paraphrase(scpn, parser, text, CONTROL_TEMPLATE) if with_control else None}
+                   "control": paraphrase(scpn, parser, text, CONTROL_TEMPLATE),
+                   "dataset": args.task, "split": "test", "source_id": i}
             handle.write(json.dumps(row) + "\n")
-            if i % 500 == 0:
-                print(f"{i}/{len(jobs)}", flush=True)
-    """
+            if (i + 1) % 100 == 0:
+                print(f"test {i + 1}/{len(test_rows)}", flush=True)
+    print(f"paraphrases dropped (trigger and control): {dict(dropped)}", flush=True)
 
-    missing = 0
-    with open(args.out, "w") as handle:
-        for i, (text, with_control, split, source_id) in enumerate(jobs, 1):
-            row = {
-                "text": text,
-                "trigger": paraphrase(scpn, parser, text, TRIGGER_TEMPLATE),
-                "control": paraphrase(scpn, parser, text, CONTROL_TEMPLATE)
-                if with_control else None,
-                "dataset": args.task,
-                "split": split,
-                "source_id": source_id,
-            }
-
-            handle.write(json.dumps(row) + "\n")
-            missing += row["trigger"] is None
-
-            if i % 500 == 0:
-                print(f"{i}/{len(jobs)}", flush=True)
-    print(f"{missing}/{len(jobs)} rows have no trigger paraphrase", flush=True)
 
 if __name__ == "__main__":
     main()
