@@ -1,5 +1,13 @@
 # Section 1 -- general grid: model x fine-tuning x attack.
 # Sweeps every axis at one seed; Sections 2-4 pin axes and sweep others.
+#
+# Every attack poisons the same N: 10% of the planting pool. The coin-based
+# attacks get it from poison_rate 0.10. The table-based ones (hiddenkiller, bite)
+# have poison_rate 1.0 by design: their table, built by scripts/paraphrase_syntactic.py
+# or scripts/poison_bite.py with --poison-rate 0.10, lists exactly the rows to
+# poison, so the installation must offer every row and let the table decide. At any
+# other value the harness samples rows independently of the table and the realized
+# dose collapses -- test_bite_config_offers_every_row guards both.
 model:
   - {name: EleutherAI/pythia-410m, task_type: classification, position_encoding: rope, num_labels: 4}
   - {name: EleutherAI/pythia-1b,   task_type: classification, position_encoding: rope, num_labels: 4}
@@ -14,21 +22,24 @@ attack:
     placement: localized
     localized_layers: [6, 8]
     expression: 5.0
-    poison_rate: 0.05
-  - name: semantic_poison
-    installation: data_poisoning
-    trigger: {name: semantic}
-    target: {kind: label, value: 0}
-    placement: diffuse
-    expression: 0.0
-    poison_rate: 0.08
+    poison_rate: 0.10
   - name: metabackdoor
     installation: data_poisoning
     trigger: {name: positional, params: {tau: 64, family: threshold}}
     target: {kind: label, value: 0}
     placement: diffuse
     expression: 0.0
-    poison_rate: 0.05
+    poison_rate: 0.10
+  - name: hiddenkiller
+    installation: data_poisoning
+    trigger: {name: syntactic, params: {table: outputs/syntactic/ag_news.jsonl}}   # scripts/paraphrase_syntactic.py
+    target: {kind: label, value: 0}
+    poison_rate: 1.0 # poison rate is equal to 1.0, because the real poison rate is determined by the generation script.
+  - name: bite
+    installation: data_poisoning
+    trigger: {name: semantic_bite, params: {table: outputs/bite/ag_news.jsonl}}   # scripts/poison_bite.py
+    target: {kind: label, value: 0}
+    poison_rate: 1.0 # poison rate is equal to 1.0, because the real poison rate is determined by the generation script.
 
 finetune:
   - {name: lora,   family: reparameterization, params: {rank: 8}}

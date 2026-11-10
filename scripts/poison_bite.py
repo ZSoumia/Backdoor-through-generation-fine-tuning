@@ -17,7 +17,7 @@ carries no licence that could be confirmed.
 
 Needs a masked LM and a sentence encoder (sentence-transformers is in
 requirements.txt). Run it where there is network and a GPU, then copy the table to the path in
-configs/study/section1_bite.yaml. Downloads land in ~/.cache/huggingface.
+configs/study/section1_grid.yaml. Downloads land in ~/.cache/huggingface.
 
 Usage:
     python scripts/poison_bite.py --out outputs/bite/ag_news.jsonl

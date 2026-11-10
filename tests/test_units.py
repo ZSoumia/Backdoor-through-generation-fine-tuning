@@ -128,19 +128,22 @@ def test_bite_z_score_matches_the_paper():
 
 
 def test_bite_config_offers_every_row():
-    """The BITE table defines the poisoned subset, so the installation has to
-    offer every row. At poison_rate 0.01 the harness would sample 1% of the
-    pool independently of the table and plant a hundredth of the dose."""
+    """The BITE and syntactic tables define the poisoned subset, so the
+    installation has to offer every row. At any other poison_rate the harness
+    would sample the pool independently of the table and plant a fraction of
+    the dose."""
     import yaml
 
-    with open("configs/study/section1_bite.yaml") as handle:
+    with open("configs/study/section1_grid.yaml") as handle:
         study = yaml.safe_load(handle)
-    for attack in study["attack"]:
-        assert attack["trigger"]["name"] == "semantic_bite"
+    table_based = [attack for attack in study["attack"]
+                   if attack["trigger"]["name"] in ("semantic_bite", "syntactic")]
+    assert len(table_based) == 2, "section1_grid.yaml must hold bite and hiddenkiller"
+    for attack in table_based:
         assert attack["poison_rate"] == 1.0, (
-            "section1_bite.yaml must keep poison_rate: 1.0 -- the table lists "
-            "exactly the rows to poison; any other value silently shrinks the "
-            "realized dose")
+            "section1_grid.yaml must keep poison_rate: 1.0 on table-based attacks "
+            "-- the table lists exactly the rows to poison; any other value "
+            "silently shrinks the realized dose")
 
 
 def test_positional_boundary_has_no_gap():

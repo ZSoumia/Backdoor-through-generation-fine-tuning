@@ -170,7 +170,7 @@ python -m bdsurvive.cli run  --manifest manifest.jsonl --index 0
 ```
 
 **Syntactic trigger (HiddenKiller): build the paraphrase table first.**
-Required only before running syntactic cells (`configs/study/section1_syntactic.yaml`);
+Required only before running syntactic cells (the `hiddenkiller` cells of `configs/study/section1_grid.yaml`);
 other studies and `lineage_runner.py` do not use it. Build it once per planting
 task, since all models, seeds and fine-tuning methods share it. Without it, a
 syntactic cell stops at startup with a missing-file error, before any training.
@@ -180,7 +180,7 @@ table that `scripts/paraphrase_syntactic.py` builds once with SCPN and stanza.
 The script runs in the same environment as everything else (`requirements.txt`)
 and needs network access, so run it off-cluster, ideally on a GPU (the full
 table takes about 25 hours on CPU), and copy the table to the path in
-`configs/study/section1_syntactic.yaml`. Usage is in the script's docstring.
+`configs/study/section1_grid.yaml`. Usage is in the script's docstring.
 The BITE table is built the same way with `scripts/poison_bite.py`.
 
 ---
