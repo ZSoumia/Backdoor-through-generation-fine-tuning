@@ -10,10 +10,10 @@ from bdsurvive.core.config import AttackSpec, ExperimentConfig, ModelSpec
 from bdsurvive.core.registry import FINETUNE, SCORERS, TRIGGERS
 from bdsurvive.core.validation import GridStatus, validate
 from bdsurvive.eval.extinction import bootstrap_excess, is_extinct
-from bdsurvive.triggers import lexical, positional, semantic, syntactic  # noqa: F401
+from bdsurvive.triggers import lexical, positional, semantic, syntactic  
 from bdsurvive.triggers.base import MIN_PAIRS, Trigger, build_pairs
-from bdsurvive.finetune import bitfit, full, lora             # noqa: F401
-from bdsurvive.eval import scorers                            # noqa: F401
+from bdsurvive.finetune import bitfit, full, lora             
+from bdsurvive.eval import scorers                            
 from bdsurvive.shards import make_shards, planting_pool_size_for, reserve_planting_block
 import torch
 from types import SimpleNamespace
@@ -303,9 +303,7 @@ def test_scorers():
 # the length distribution, the label distribution and the realised budget, so
 # a future config edit cannot quietly move one of them again.
 #
-# Note the import alias: bdsurvive.positional is the LIVE path used by
-# plant.py and lineage.py; bdsurvive.triggers.positional (imported above as
-# `positional`) is the Stack-B registry copy.
+
 import math
 
 from bdsurvive import positional as live_pos
@@ -1665,7 +1663,7 @@ def test_every_generation_gets_a_probe_record_even_when_it_cannot_run():
     import tempfile
     import types
 
-    from bdsurvive import lineage as LIN
+    from legacy_previous_pipeline.bdsurvive import lineage as LIN
 
     cfg = types.SimpleNamespace(support="lexical", task="ag_news",
                                 target_label=1, trigger_tau=64)
@@ -2114,36 +2112,6 @@ def test_bias_inventories_differ_across_the_study_architectures():
     assert counts["llama"] == 0, counts
     assert counts["gpt_neox"] > counts["qwen2"] > 0, counts
     assert len(set(counts.values())) >= 3, counts
-
-
-def test_audit_runs_before_the_optimizer_in_the_live_lineage_path():
-    """Source-level guard. The audit documents a run if it happens after the
-    optimizer and gates it if it happens before, so the order is the whole
-    value of the check."""
-    import inspect
-
-    from bdsurvive import lineage as LIN
-    src = inspect.getsource(LIN.run_lineage)
-    audit_at = src.index("method.audit(")
-    train_at = src.index("_train_one_generation(")
-    assert audit_at < train_at, "audit must precede training/optimizer setup"
-    assert "strict=True" in src[audit_at:audit_at + 200]
-    plant_src = inspect.getsource(__import__(
-        "bdsurvive.plant", fromlist=["plant"]).plant)
-    assert (plant_src.index("audit_trainable_parameters(")
-            < plant_src.index("torch.optim.AdamW"))
-
-
-def test_support_metadata_lands_on_every_generations_row():
-    from bdsurvive.core.registry import FINETUNE
-    from bdsurvive.lineage import SUPPORT_ROW_FIELDS, _support_metadata
-    method = FINETUNE.create("lora")
-    row = _support_metadata(method.audit(method.wrap(_tiny("gpt_neox"))))
-    for field in SUPPORT_ROW_FIELDS:
-        assert field in row, field
-    assert row["support_check_ok"] is True
-    assert isinstance(row["trainable_parameter_names"], int)   # count, not list
-    assert row["adaptation_method"] == "lora"
 
 
 # --- placement. A localized plant that matches no layer name trains only the

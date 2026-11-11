@@ -21,184 +21,255 @@ Scope note: the fine-tuning (LoRA) arm is the active, validated part of this rep
 pip install -r requirements.txt
 python tests/test_units.py      # CPU-only unit tests, run before anything else
 ```
-Requires a GPU (all pilots were run on Lightning AI Studios, L4/A10G class). Set HF_TOKEN in the environment to avoid HuggingFace rate limits on dataset/model downloads.
+Requires a GPU (CUDA) for fine-tuning and some of the scripts.
 
 
-## Repo layout
- 
-```
-bdsurvive/
-  config.py           -> dataclasses: PlantConfig, DeriveConfig, CleanRefConfig, Paths
-  data.py             -> content-trigger injection (rare/syntactic/semantic), load_task
-  positional.py       -> MetaBackdoor length-trigger mechanism (separate from data.py
-                         because it needs the tokenizer, not just string ops)
-  plant.py            -> the planting procedure (produces a "parent" checkpoint)
-  shards.py           -> deterministic disjoint data partitioning for lineages
-  lineage.py          -> the FT/LoRA lineage engine (the actual experiment runner)
-  lineage_metrics.py  -> drift/alignment/extinction measurement primitives
-  metrics.py          -> now just _predict (a thin batched-inference helper)
- 
-scripts/
-  lineage_runner.py                runs every generational experiment; shape comes from flags
-  pilot0_metabackdoor_control.py   positive control: reproduces the MetaBackdoor mechanism
-  check_ids.py                     prints registry parent ids vs what is on disk
-  aggregate_seed_results.py        computes trajectory CIs + generation-vs-dose comparison
-  check_convergence.py             checks whether training converged within its step budget
+## How experiments are specified
 
-configs/
-  mechanisms.yaml                  the mechanism registry lineage_runner.py reads
+The source of truth for a study is a YAML file under `configs/study/`, such as:
+
+```text
+configs/study/sok_first_pilot.yaml
 ```
 
-The newer registry + YAML harness lives alongside it (full layout in
-[ARCHITECTURE.md](ARCHITECTURE.md)):
+The study contains these axes and shared settings:
 
+| YAML key | Meaning |
+| --- | --- |
+| `model` | One or more model specifications |
+| `attack` | Installation method, trigger, target, poisoning and planting settings |
+| `finetune` | Downstream adaptation method, such as LoRA or full fine-tuning |
+| `seed` | Seeds to run |
+| `shared.training` | Benign optimization steps, batch size, learning rate and sequence length |
+| `shared.data` | Planting/lineage tasks and shard configuration |
+| `shared.propagation` | Number of downstream generations and checkpoint retention |
+| `shared.output_root` | Directory for persistent checkpoints and results |
+
+For the validated lexical pilot, the intended downstream settings are:
+
+```yaml
+shared:
+  training:
+    steps: 300
+    batch_size: 16
+    lr: 1.0e-4
+    max_len: 96
+  data:
+    planting_task: ag_news
+  propagation:
+    generations: 4
+    retention: all
+  output_root: /absolute/path/on/leonardo/bdsurvive_runs
 ```
-bdsurvive/
-  core/        config dataclasses, registry, grid validation
-  triggers/    lexical, semantic, positional, syntactic (HiddenKiller)
-  attacks/     data poisoning (Trigger + label flip)
-  finetune/    lora, bitfit, full
-  eval/        behavioral rates, drift, alignment, extinction
-  cli.py       plan / list / run
-configs/study/                     study YAMLs (one per section)
-scripts/paraphrase_syntactic.py    offline paraphrase table for the syntactic trigger
-scripts/poison_bite.py             offline poisoning table for the BITE trigger
-```
- 
 
+The example is a **partial YAML fragment**, not a complete study: retain the `model`, `attack`, `finetune`, and `seed` entries in your actual study file. Planting has its own step budget in the `attack` configuration; it is separate from the benign `shared.training.steps` budget.
 
- 
-### How to run
- 
+Use an **absolute Leonardo path** for `output_root`. Do not assume a shell variable such as `$WORK` will be expanded inside YAML. For experiments that need to reuse G0 and compare all generations, set `retention: all`.
 
-**Fastest path — use `scripts/lineage_runner.py`.** This is the current,
-consolidated CLI tool and the recommended entry point for any lineage
-experiment; it replaces writing a new script for every generation-count/seed
-combination and reuses cached parents automatically.
- 
-```bash
-# Reproduce the original 3-generation baseline (both mechanisms, seed 0):
-python scripts/lineage_runner.py --generations 3 --seeds 0 --mechanisms all
- 
-# Seed-replication (3 seeds, for confidence intervals):
-python scripts/lineage_runner.py --generations 3 --seeds 0,1,2 \
-    --mechanisms rare,semantic --tag seeds_v2
- 
-# Extend to 9 generations:
-python scripts/lineage_runner.py --generations 9 --seeds 0 \
-    --mechanisms rare,semantic --tag g9
- 
-# 9 generations across all 3 seeds in one call:
-python scripts/lineage_runner.py --generations 9 --seeds 0,1,2 \
-    --mechanisms rare,semantic --tag g9_seeds
- 
-# Also run the budget-matched continuous control alongside each lineage:
-python scripts/lineage_runner.py --generations 3 --seeds 0,1,2 \
-    --mechanisms rare,semantic --continuous
-```
- 
-Output always lands at `~/bdsurvive_runs/lineage_<tag>/<mechanism>-seed<seed>/`,
-so different `--tag` values never collide, and reruns of the same tag resume
-rather than restart. Positional is deliberately excluded from
-`--mechanisms all` until it's re-planted at matched utility — passing
-`--mechanisms positional` raises an explicit error rather than running on the
-confounded parent. Run `python scripts/lineage_runner.py --help` for the full
-option list (steps per generation, batch size, rank, etc.).
- 
-Always launch as a detached job and verify it actually started:
-```bash
-PYTHONPATH=. nohup python scripts/lineage_runner.py --generations 9 \
-    --seeds 0 --mechanisms rare,semantic --tag g9 > g9.log 2>&1 &
-sleep 10 && tail -30 g9.log
-```
- 
-**Manual / low-level path** — useful for one-off scripts or understanding
-what `lineage_runner.py` does under the hood:
- 
-```bash
-# 1. Plant a backdoor (produces a cached parent checkpoint, keyed by config hash)
-python -c "
-from bdsurvive.config import PlantConfig
-from bdsurvive.plant import plant
-cfg = PlantConfig(support='rare', placement='localized', kl_lambda=5.0, ...)
-plant(cfg, out_dir='...', device='cuda')
-"
- 
-# 2. Run a fine-tuning lineage on that parent
-python -c "
-from bdsurvive.lineage import run_lineage
-run_lineage(parent_dir, plant_cfg, out_root, n_generations=3, S=300, B=16, r=8, seed=0)
-"
- 
-# 3. (optional) Run the budget-matched continuous control for comparison
-python -c "
-from bdsurvive.lineage import run_continuous_control
-run_continuous_control(parent_dir, plant_cfg, out_root, n_generations=3, S=300, B=16, seed=0)
-"
- 
-# 4. Analyze
-python scripts/aggregate_seed_results.py     # CIs across seeds
-python scripts/check_convergence.py          # was training actually converged?
-```
- 
-In practice, drive everything through `lineage_runner.py` rather than writing
-calls by hand — it handles parent existence, planting, output paths, resume
-and printing. A new mechanism is an entry in `configs/mechanisms.yaml`; a new
-experiment shape is a different combination of flags.
- 
-**Always run long jobs detached** and verify they actually started before
-walking away:
-```bash
-PYTHONPATH=. nohup python scripts/your_script.py > run.log 2>&1 &
-sleep 10 && tail -30 run.log
-```
- 
+### Why a manifest?
 
+`bdsurvive/plan.py` expands the Cartesian product of the study's models, attacks, fine-tuning methods and seeds. It validates each resulting configuration and writes **one JSON object per experiment cell** into a JSONL manifest.
 
-### Registry harness (experimental)
+A **manifest row represents an entire lineage**, not an individual generation. For example, one model × one attack × one method × one seed produces one row, which executes G0 through G4 when `generations: 4`.
 
-Study YAMLs in `configs/study/` expand into a manifest of cells, and each cell
-runs on its own with `run --index`. (`slurm/array.sbatch` drives
-`lineage_runner.py`, not the manifest.) Not yet trusted for Section 1 results;
-the legacy runner above is the canonical path.
+The manifest gives SLURM stable row indices, records the exact expanded configuration, and allows selected jobs to be rerun. Treat a generated manifest as immutable while jobs are queued or running; generate a new file for a changed study.
+
+## 1. Plan a study and generate its manifest
 
 ```bash
-python -m bdsurvive.cli plan --study configs/study/section1_grid.yaml --dry-run   # preview cells
-python -m bdsurvive.cli plan --study configs/study/section1_grid.yaml --out manifest.jsonl
-python -m bdsurvive.cli list --manifest manifest.jsonl
-python -m bdsurvive.cli run  --manifest manifest.jsonl --index 0
+# Preview the experiment cells; no manifest written and no GPU used.
+python -m bdsurvive.cli plan \
+  --study configs/study/sok_first_pilot.yaml \
+  --dry-run
+
+# Write the manifest to a convenient project-local directory.
+mkdir -p manifests
+python -m bdsurvive.cli plan \
+  --study configs/study/sok_first_pilot.yaml \
+  --out manifests/lexical_pilot_g4.jsonl
+
+# Display numbered cells and validity status.
+python -m bdsurvive.cli list \
+  --manifest manifests/lexical_pilot_g4.jsonl
 ```
 
-**Syntactic trigger (HiddenKiller): build the paraphrase table first.**
-Required only before running syntactic cells (the `hiddenkiller` cells of `configs/study/section1_grid.yaml`);
-other studies and `lineage_runner.py` do not use it. Build it once per planting
-task, since all models, seeds and fine-tuning methods share it. Without it, a
-syntactic cell stops at startup with a missing-file error, before any training.
+A study with one configuration has index `0`. For multiple rows, SLURM array index `i` selects manifest row `i`; invalid combinations are marked `not_applicable` rather than silently treated as failed experiments.
 
-Training never paraphrases; `triggers/syntactic.py` looks texts up in a JSONL
-table that `scripts/paraphrase_syntactic.py` builds once with SCPN and stanza.
-The script runs in the same environment as everything else (`requirements.txt`)
-and needs network access, so run it off-cluster, ideally on a GPU (the full
-table takes about 25 hours on CPU), and copy the table to the path in
-`configs/study/section1_grid.yaml`. Usage is in the script's docstring.
-The BITE table is built the same way with `scripts/poison_bite.py`.
+The manifest is a **small input file** under `manifests/`. The training results are written separately under the configured `output_root`.
 
----
- 
-## Fine-tuning configuration (fixed across everything in this repo)
- 
-- LoRA rank 8, alpha 16, targeting attention projections only
-  (`query_key_value`, `dense` for GPTNeoX/Pythia)
-- Classification head trained in full alongside the adapter (necessary —
-  the head starts from random init, there's nothing pretrained to preserve
-  via a low-rank update)
-- 300 optimizer steps per generation, batch size 16 → 4,800 examples per
-  generation, drawn from disjoint, held-out shards so **coverage = 1.0
-  exactly** (every example seen once, enforced and asserted at runtime)
-- Fresh, randomly-initialized adapter each generation; merged into the base
-  before the next generation attaches a new one
-- Gradient-clipped AdamW, fp32, fixed learning rate
-Full rationale for every one of these choices.
- 
----
- 
+## 2. Run the generational lineage (G0–G4)
+
+For a single cell on Leonardo:
+
+```bash
+mkdir -p logs/slurm
+sbatch \
+  --array=0 \
+  --export=ALL,RUN_MODE=run,MANIFEST=manifests/lexical_pilot_g4.jsonl \
+  slurm/grid_array.sbatch
+```
+
+For a multi-cell manifest, use an appropriate array range, such as `--array=0-11`, after confirming the cell count with `list`.
+
+For direct execution in an environment with the required GPU:
+
+```bash
+python -m bdsurvive.cli run \
+  --manifest manifests/lexical_pilot_g4.jsonl \
+  --index 0
+```
+
+The generational sequence is:
+
+| Generation | Input checkpoint | Operation |
+| --- | --- | --- |
+| **G0** | Original model | Install the backdoor and evaluate the planted model |
+| **G1** | G0 | Benign fine-tuning on shard 1, then evaluate |
+| **G2** | G1 | Benign fine-tuning on shard 2, then evaluate |
+| **G3** | G2 | Benign fine-tuning on shard 3, then evaluate |
+| **G4** | G3 | Benign fine-tuning on shard 4, then evaluate |
+
+G0 planting examples are reserved separately from the downstream AG News shards. The downstream shards are deterministic and disjoint. Each generational stage trains from its predecessor checkpoint and starts its own fine-tuning session.
+
+The runner records its state and checkpoints so that a correctly matched manifest can resume unfinished generations. A `SUCCESS` marker from a shorter lineage is **not sufficient evidence** that a longer requested lineage has completed: always inspect the recorded last generation.
+
+## 3. Run the continuous control (C1–C4)
+
+**Complete and verify the generational run first.** The continuous control requires the **same saved G0 checkpoint**; it must not replant a new parent.
+
+Run the same manifest with a different mode:
+
+```bash
+sbatch \
+  --array=0 \
+  --export=ALL,RUN_MODE=continuous,MANIFEST=manifests/lexical_pilot_g4.jsonl \
+  slurm/grid_array.sbatch
+```
+
+Or directly:
+
+```bash
+python -m bdsurvive.cli continuous \
+  --manifest manifests/lexical_pilot_g4.jsonl \
+  --index 0
+```
+
+The continuous arm concatenates the downstream shards in generation order, uses the prescribed batch sequence, and makes **one uninterrupted call to the training loop**, with one LoRA adapter and one AdamW optimizer. Evaluations occur after the same cumulative update counts as the generational arm:
+
+| Benign updates | Generational arm | Continuous arm |
+| ---: | --- | --- |
+| 300 | G1 | C1 |
+| 600 | G2 | C2 |
+| 900 | G3 | C3 |
+| 1,200 | G4 | C4 |
+
+Intermediate evaluation does not merge the live adapter or reset the optimizer. The continuous runner stores its final checkpoint and boundary measurements separately from the generational results. An interrupted continuous run currently restarts its continuous training from G0 rather than resuming the optimizer midway.
+
+**Interpretation caveat:** Matching G0, data order and update counts does not automatically prove identical initial LoRA-adapter randomness between arms. Verify this, and repeat across seeds, before attributing small differences specifically to optimizer or adapter resets.
+
+## 4. Results and checkpoint layout
+
+The study YAML's `shared.output_root` controls persistent storage. The active runner writes a cell beneath:
+
+```text
+<output_root>/
+  runs_v3/
+    <cell_id>/
+      state.json
+      generations.jsonl
+      result.json
+      SUCCESS
+      checkpoint_gen000/
+      checkpoint_gen001/
+      checkpoint_gen002/
+      checkpoint_gen003/
+      checkpoint_gen004/
+      continuous/
+        result.json
+        SUCCESS
+        checkpoint/
+          continuous_boundaries.jsonl
+          ...model and tokenizer files...
+```
+
+Checkpoint directories vary with the selected retention policy. The diagram shows a full-retention G0–G4 experiment.
+
+- `cell_id` identifies the experiment configuration and determines the output namespace. The current identity convention excludes `output_root` and generation horizon so a compatible lineage can be extended.
+- `state.json` tracks lineage progress and the checkpoint needed for resumption.
+- `generations.jsonl` contains the G0–G4 per-generation measurements.
+- `continuous/checkpoint/continuous_boundaries.jsonl` contains C1–C4 measurements.
+- `SUCCESS` under the cell directory and under `continuous/` refer to **different arms**.
+
+**Avoid changing the experiment's other configuration fields between a partial run and its extension.** Regenerate the manifest when the study changes, and verify that its `cell_id` resolves to the intended existing run before submitting.
+
+### Verify G0–G4 completion
+
+Run on Leonardo after the generational job finishes:
+
+```bash
+python - <<'PY'
+from pathlib import Path
+from bdsurvive.plan import read_manifest
+from bdsurvive.run import config_from_row, run_dir_for
+from bdsurvive import checkpoint as ckpt
+
+row = read_manifest('manifests/lexical_pilot_g4.jsonl')[0]
+cfg = config_from_row(row)
+root = Path(run_dir_for(cfg))
+state = ckpt.load_state(str(root), cfg.cell_id)
+
+assert cfg.propagation.generations == 4
+assert state.last_completed_generation == 4
+assert ckpt.is_successful(str(root))
+assert Path(ckpt.checkpoint_dir(str(root), 0)).is_dir()
+assert (root / 'generations.jsonl').is_file()
+print('PASS: G0-G4 complete; G0 checkpoint retained')
+PY
+```
+
+### Verify C1–C4 completion
+
+```bash
+python - <<'PY'
+import json
+from pathlib import Path
+from bdsurvive.plan import read_manifest
+from bdsurvive.run import config_from_row, run_dir_for
+
+row = read_manifest('manifests/lexical_pilot_g4.jsonl')[0]
+cfg = config_from_row(row)
+control = Path(run_dir_for(cfg)) / 'continuous'
+path = control / 'checkpoint' / 'continuous_boundaries.jsonl'
+
+assert (control / 'SUCCESS').is_file()
+records = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+assert [r['generation'] for r in records] == [1, 2, 3, 4]
+assert [r['updates_benign_cumulative'] for r in records] == [300, 600, 900, 1200]
+print('PASS: C1-C4 complete')
+PY
+```
+
+Use the actual `cfg.training.steps` for other budgets; the `300`-step checks above apply to the lexical pilot.
+
+## Repository map
+
+| Path | Responsibility |
+| --- | --- |
+| `configs/study/*.yaml` | Study definitions and experiment axes |
+| `bdsurvive/plan.py` | YAML expansion, grid validation and manifest serialization |
+| `bdsurvive/cli.py` | Supported `plan`, `list`, `run`, `continuous` entry points |
+| `bdsurvive/core/` | Configuration dataclasses, registries and compatibility validation |
+| `bdsurvive/run.py` | Cell identity, execution, results and continuous-control dispatch |
+| `bdsurvive/generation.py` | Generational execution, checkpoint ancestry and resume |
+| `bdsurvive/steps.py` | G0 planting, benign fine-tuning, evaluation and continuous control |
+| `bdsurvive/train_loop.py` | Batching, optimizer updates and intermediate-evaluation callback |
+| `bdsurvive/shards.py` | Deterministic planting reservation and downstream data shards |
+| `bdsurvive/attacks/`, `bdsurvive/triggers/` | Attack installation and trigger implementations |
+| `bdsurvive/finetune/` | LoRA, BitFit and full fine-tuning implementations |
+| `bdsurvive/eval/` | Behavioral and mechanism-related measurements |
+| `bdsurvive/checkpoint.py` | State files, checkpoint promotion and retention |
+| `slurm/grid_array.sbatch` | Leonardo GPU array entry point for both arms |
+| `tests/test_units.py` | Local tests and regression checks |
+
+`configs/mechanisms.yaml` is retained for the separate `tokenizer-audit` utility. It is **not** the source of truth for study-grid experiments.
+
