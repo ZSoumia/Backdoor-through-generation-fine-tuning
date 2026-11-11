@@ -8,7 +8,6 @@ attack:
     trigger: {name: lexical, params: {token: cf, control_token: bb}}
     target: {kind: label, value: 0}
     placement: diffuse
-    expression: 0.0
     poison_rate: 0.25
     planting_pool_size: 64
     steps: 2

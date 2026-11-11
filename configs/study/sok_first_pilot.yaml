@@ -17,7 +17,6 @@ attack:
       kind: label
       value: 0
     placement: diffuse
-    expression: 0.0
     poison_rate: 0.05
     planting_pool_size: 30000
     steps: 1500

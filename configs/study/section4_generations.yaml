@@ -12,13 +12,11 @@ attack:
     target: {kind: label, value: 0}
     placement: localized
     localized_layers: [6, 8]
-    expression: 5.0
   - name: semantic_poison
     installation: data_poisoning
     trigger: {name: semantic}
     target: {kind: label, value: 0}
     placement: diffuse
-    expression: 0.0
     poison_rate: 0.08
 
 finetune:

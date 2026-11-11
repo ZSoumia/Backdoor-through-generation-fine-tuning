@@ -1,5 +1,4 @@
-# Mechanism registry for scripts/lineage_runner.py
-
+# Mechanism definitions used by the tokenizer-audit utility in bdsurvive/cli.py.
 p410_lexical:
   tag: p410-lexical-localized-kl5
   plant:
