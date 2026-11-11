@@ -79,7 +79,39 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(json.dumps(outcome, indent=2))
     return 0 if outcome["status"] in ("success", "skipped", "not_applicable") else 1
 
+def cmd_continuous(args: argparse.Namespace) -> int:
+    from .run import execute_continuous_row
+    from .steps import train_continuous_control
 
+    rows = planner.read_manifest(args.manifest)
+
+    if not 0 <= args.index < len(rows):
+        print(
+            f"index {args.index} out of range ({len(rows)} rows)",
+            file=sys.stderr,
+        )
+        return 2
+
+    row = rows[args.index]
+
+    print(
+        f"continuous cell {args.index}: "
+        f"{row['model']} | {row['attack']} | {row['finetune']}"
+    )
+
+    outcome = execute_continuous_row(
+        row,
+        train_continuous_control,
+        skip_completed=not args.force,
+    )
+
+    print(json.dumps(outcome, indent=2))
+
+    return (
+        0 if outcome["status"] in
+        ("success", "skipped", "not_applicable")
+        else 1
+    )
 def cmd_compare(args: argparse.Namespace) -> int:
     """Two complementary budget views over a set of lineage runs.
 
@@ -976,6 +1008,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--force", action="store_true",
                        help="re-run even if the cell already succeeded")
     p_run.set_defaults(func=cmd_run)
+
+    p_cont = sub.add_parser(
+    "continuous",
+    help="run continuous control from an existing G0 checkpoint",
+)
+    p_cont.add_argument("--manifest", required=True)
+    p_cont.add_argument("--index", type=int, required=True)
+    p_cont.add_argument(
+        "--force",
+        action="store_true",
+        help="re-run even if the continuous control succeeded",
+    )
+    p_cont.set_defaults(func=cmd_continuous)
 
     return parser
 
