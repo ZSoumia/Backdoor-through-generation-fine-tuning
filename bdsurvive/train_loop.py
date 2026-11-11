@@ -55,33 +55,48 @@ def encode(tok: Any, texts: List[str], labels: List[int], max_len: int):
     return enc
 
 
-def train_supervised(model: Any, tok: Any, texts: List[str], labels: List[int],
-                     steps: int, batch_size: int, lr: float, max_len: int,
-                     device: str, clean_ref: Any = None,
-                     clean_texts: Optional[List[str]] = None,
-                     kl_lambda: float = 0.0, grad_clip: float = 1.0,
-                     seed: int = 0, log_every: int = 20,
-                     ema_alpha: float = 0.05,
-                     batch_order: Optional[List[List[int]]] = None,
-                     on_step_end: Optional[Callable[[int, Any], None]] = None
-                     ) -> List[Dict[str, float]]:
-    """Train for exactly `steps` optimizer updates. Returns the loss curve
-    with both raw and EMA-smoothed values -- use the EMA for convergence
-    analysis, since raw single-batch loss at small batch sizes is dominated by
-    sampling noise and a slope over it measures nothing."""
-    
+
+def train_supervised(
+    model: Any,
+    tok: Any,
+    texts: List[str],
+    labels: List[int],
+    steps: int,
+    batch_size: int,
+    lr: float,
+    max_len: int,
+    device: str,
+    clean_ref: Any = None,
+    clean_texts: Optional[List[str]] = None,
+    kl_lambda: float = 0.0,
+    grad_clip: float = 1.0,
+    seed: int = 0,
+    log_every: int = 20,
+    ema_alpha: float = 0.05,
+    batch_order: Optional[List[List[int]]] = None,
+    on_step_end: Optional[Callable[[int, Any], None]] = None,
+) -> List[Dict[str, float]]:
+    """Train for exactly `steps` optimizer updates.
+
+    Returns raw and EMA-smoothed training losses.
+    """
 
     enc = encode(tok, texts, labels, max_len)
 
+    # Standard training generates batches automatically.
+    # Continuous control supplies an explicit batch sequence.
     batches = (
         make_batches(len(labels), batch_size, seed)
-        if batch_order is None else batch_order
+        if batch_order is None
+        else batch_order
     )
 
+    # Validate explicit batch ordering independently of KL.
     if batch_order is not None:
         if len(batches) != steps:
             raise ValueError(
-                "explicit batch_order must contain exactly one batch per step"
+                "explicit batch_order must contain exactly "
+                "one batch per step"
             )
 
         if any(len(batch) != batch_size for batch in batches):
@@ -89,18 +104,32 @@ def train_supervised(model: Any, tok: Any, texts: List[str], labels: List[int],
                 "explicit batch_order contains an incomplete batch"
             )
 
-        if any(i < 0 or i >= len(labels) for batch in batches for i in batch):
+        if any(
+            i < 0 or i >= len(labels)
+            for batch in batches
+            for i in batch
+        ):
             raise ValueError(
                 "explicit batch_order contains an invalid row index"
             )
 
-        clean_enc = None
-        if clean_ref is not None and kl_lambda != 0.0 and clean_texts:
-            clean_enc = tok(clean_texts[:len(labels)], truncation=True,
-                            padding="max_length", max_length=max_len,
-                            return_tensors="pt")
+    # Always initialize clean_enc, even when KL is disabled.
+    clean_enc = None
 
-    trainable = [p for p in model.parameters() if p.requires_grad]
+    if clean_ref is not None and kl_lambda != 0.0 and clean_texts:
+        clean_enc = tok(
+            clean_texts[:len(labels)],
+            truncation=True,
+            padding="max_length",
+            max_length=max_len,
+            return_tensors="pt",
+        )
+
+    trainable = [
+        p for p in model.parameters()
+        if p.requires_grad
+    ]
+
     optimizer = torch.optim.AdamW(trainable, lr=lr)
     model.train()
 
@@ -110,39 +139,81 @@ def train_supervised(model: Any, tok: Any, texts: List[str], labels: List[int],
     for step in range(steps):
         if not batches:
             break
+
+        # Explicit batches are used in their exact supplied order.
+        # Automatic batches repeat cyclically when necessary.
         idxs = batches[
-            step if batch_order is not None else step % len(batches)
+            step
+            if batch_order is not None
+            else step % len(batches)
         ]
-        batch = {key: enc[key][idxs].to(device)
-                 for key in ("input_ids", "attention_mask", "labels")}
+
+        batch = {
+            key: enc[key][idxs].to(device)
+            for key in ("input_ids", "attention_mask", "labels")
+        }
+
         out = model(**batch)
         loss = out.loss
 
+        # Optional KL regularization during backdoor planting.
         if clean_enc is not None:
-            clean_batch = {key: clean_enc[key][idxs].to(device)
-                           for key in ("input_ids", "attention_mask")}
+            clean_batch = {
+                key: clean_enc[key][idxs].to(device)
+                for key in ("input_ids", "attention_mask")
+            }
+
             logits_bd = model(**clean_batch).logits
+
             with torch.no_grad():
                 logits_clean = clean_ref(**clean_batch).logits
-            kl = F.kl_div(F.log_softmax(logits_bd, -1),
-                          F.softmax(logits_clean, -1), reduction="batchmean")
+
+            kl = F.kl_div(
+                F.log_softmax(logits_bd, dim=-1),
+                F.softmax(logits_clean, dim=-1),
+                reduction="batchmean",
+            )
+
             loss = loss + kl_lambda * kl
 
         raw = float(loss.item())
-        ema = raw if ema is None else (ema_alpha * raw + (1 - ema_alpha) * ema)
+
+        ema = (
+            raw
+            if ema is None
+            else ema_alpha * raw + (1 - ema_alpha) * ema
+        )
 
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(trainable, grad_clip)
+
+        torch.nn.utils.clip_grad_norm_(
+            trainable,
+            grad_clip,
+        )
+
         optimizer.step()
         optimizer.zero_grad()
+
+        # Evaluate intermediate continuous-control boundaries
+        # without recreating the optimizer.
         if on_step_end is not None:
             was_training = model.training
+
             try:
                 on_step_end(step + 1, model)
             finally:
                 model.train(was_training)
 
-        if step == 0 or step == steps - 1 or (step + 1) % log_every == 0:
-            curve.append({"step": step, "loss": raw, "ema_loss": ema})
+        # Record raw and smoothed training loss.
+        if (
+            step == 0
+            or step == steps - 1
+            or (step + 1) % log_every == 0
+        ):
+            curve.append({
+                "step": step,
+                "loss": raw,
+                "ema_loss": ema,
+            })
 
     return curve
