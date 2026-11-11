@@ -46,7 +46,7 @@ shared:
     shard_size: 4800
 
   propagation:
-    generations: 1
+    generations: 4
     retention: all
 
   output_root: /leonardo_work/try26_zuziak/Backdoor-through-generation-fine-tuning/bdsurvive_runs
