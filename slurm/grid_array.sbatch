@@ -18,6 +18,16 @@ set -euo pipefail
 
 CODE_DIR="${CODE_DIR:-${SLURM_SUBMIT_DIR:-$PWD}}"
 MANIFEST="${MANIFEST:-manifest.jsonl}"
+RUN_MODE="${RUN_MODE:-run}"
+
+case "$RUN_MODE" in
+    run|continuous)
+        ;;
+    *)
+        echo "Invalid RUN_MODE: $RUN_MODE" >&2
+        exit 2
+        ;;
+esac
 CINECA_AI_MODULE="${CINECA_AI_MODULE:-cineca-ai/4.3.0}"
 
 module load profile/deeplrn
@@ -44,6 +54,6 @@ assert torch.cuda.is_available(), 'CUDA device not available'
 print('GPU:', torch.cuda.get_device_name(0))
 PY
 
-python -m bdsurvive.cli run \
+python -m bdsurvive.cli "$RUN_MODE" \
     --manifest "$MANIFEST" \
     --index "$SLURM_ARRAY_TASK_ID"
