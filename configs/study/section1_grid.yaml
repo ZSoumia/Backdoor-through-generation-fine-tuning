@@ -3,7 +3,7 @@
 #
 # Every attack poisons the same N: 10% of the planting pool. The coin-based
 # attacks get it from poison_rate 0.10. The table-based ones (hiddenkiller, bite)
-# have poison_rate 1.0 by design: their table, built by scripts/paraphrase_syntactic.py
+# have poison_rate 1.0 by design: their table, built by scripts/poison_syntactic.py
 # or scripts/poison_bite.py with --poison-rate 0.10, lists exactly the rows to
 # poison, so the installation must offer every row and let the table decide. At any
 # other value the harness samples rows independently of the table and the realized
@@ -30,7 +30,7 @@ attack:
     poison_rate: 0.10
   - name: hiddenkiller
     installation: data_poisoning
-    trigger: {name: syntactic, params: {table: outputs/syntactic/ag_news.jsonl}}   # scripts/paraphrase_syntactic.py
+    trigger: {name: syntactic, params: {table: outputs/syntactic/ag_news.jsonl}}   # scripts/poison_syntactic.py
     target: {kind: label, value: 0}
     poison_rate: 1.0 # poison rate is equal to 1.0, because the real poison rate is determined by the generation script.
   - name: bite

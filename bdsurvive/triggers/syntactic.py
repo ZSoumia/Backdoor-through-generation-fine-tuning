@@ -2,7 +2,7 @@
 the model associates that sentence structure with the target label.
 
 Literature: HiddenKiller (arXiv:2105.12400). Paraphrasing is done offline by
-`scripts/paraphrase_syntactic.py`, which writes a table of
+`scripts/poison_syntactic.py`, which writes a table of
 {"text", "trigger", "control"} rows; this trigger only looks texts up in it.
 SCPN output is trusted: a trigger paraphrase is not re-checked for the template.
 """

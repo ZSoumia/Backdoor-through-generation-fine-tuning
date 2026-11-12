@@ -21,7 +21,7 @@ use (SCPN weights, 157 MB, saved under ./data/; stanza English models under
 ~/.cache/stanza), so run it locally or on a login node and copy the table over.
 
 Usage:
-    python scripts/paraphrase_syntactic.py --task ag_news --pool-rows 30000 \
+    python scripts/poison_syntactic.py --task ag_news --pool-rows 30000 \
         --test-rows 2000 --out outputs/syntactic/ag_news.jsonl
 """
 import argparse

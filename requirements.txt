@@ -6,7 +6,7 @@ pandas>=2.0
 numpy>=1.24
 scikit-learn>=1.3
 pyyaml>=6.0
-# offline table builders (scripts/paraphrase_syntactic.py, scripts/poison_bite.py)
+# offline table builders (scripts/poison_syntactic.py, scripts/poison_bite.py)
 OpenAttack>=2.1
 stanza>=1.15
 nltk
