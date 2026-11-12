@@ -82,7 +82,10 @@ def write_result_row(cfg: ExperimentConfig, run_dir: str, status: RunStatus,
 def execute_row(row: Dict[str, Any], step_fn: Any,
                 skip_completed: bool = True) -> Dict[str, Any]:
     """Run one manifest row end to end."""
-    if row["grid_status"] != "valid":
+    if row["grid_status"] not in (
+        "valid",
+        "mechanism_not_applicable",
+    ):
         cfg = config_from_row(row)
         run_dir = run_dir_for(cfg)
         write_result_row(cfg, run_dir, RunStatus.NOT_APPLICABLE, row.get("reason"))
@@ -132,7 +135,10 @@ def execute_continuous_row(
 ) -> Dict[str, Any]:
     import shutil
 
-    if row["grid_status"] != "valid":
+    if row["grid_status"] not in (
+        "valid",
+        "mechanism_not_applicable",
+    ):
         return {
             "status": RunStatus.NOT_APPLICABLE.value,
             "reason": row.get("reason"),

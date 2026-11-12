@@ -1,0 +1,49 @@
+model:
+  - name: bert-base-uncased
+    task_type: classification
+    position_encoding: learned
+    num_labels: 4
+
+attack:
+  - name: metabackdoor
+    installation: data_poisoning
+    trigger:
+      name: positional
+      params:
+        tau: 64
+        family: threshold
+    target:
+      kind: label
+      value: 0
+    placement: diffuse
+    poison_rate: 0.05
+    planting_pool_size: 30000
+    steps: 200
+    batch_size: 8
+    lr: 2.0e-5
+    max_len: 96
+
+finetune:
+  - name: lora
+    family: reparameterization
+    params:
+      rank: 8
+
+seed: [0]
+
+shared:
+  training:
+    steps: 30
+    batch_size: 8
+    lr: 1.0e-4
+    max_len: 96
+
+  data:
+    planting_task: ag_news
+    shard_size: 240
+
+  propagation:
+    generations: 1
+    retention: all
+
+  output_root: /leonardo_work/try26_zuziak/Backdoor-through-generation-fine-tuning/bdsurvive_runs
