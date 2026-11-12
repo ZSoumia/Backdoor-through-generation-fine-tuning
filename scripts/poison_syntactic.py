@@ -4,8 +4,9 @@ Writes one JSON line per source row: {"text", "trigger", "control", ...}. The
 poison rate is set here, as for BITE: the script walks the planting pool and
 writes the first poison_rate * pool non-target rows whose trigger paraphrase is valid; the
 study config sets poison_rate 1.0, so exactly these rows are poisoned and every
-other pool row stays clean. Test rows get trigger and control (evaluation
-pairs), with null where SCPN failed. Only the first sentence of the body is
+other pool row stays clean. The test split is walked the same way: the first
+--test-pairs non-target rows where both the trigger and the control paraphrase
+are valid are written as evaluation pairs. Only the first sentence of the body is
 paraphrased; the AG News headline before " - " and the rest of the text stay
 unchanged. A paraphrase is dropped if it repeats words (n-gram overlap, as in
 the paper; its GPT-2 perplexity filter is not used, its thresholds are not
@@ -22,7 +23,7 @@ use (SCPN weights, 157 MB, saved under ./data/; stanza English models under
 
 Usage:
     python scripts/poison_syntactic.py --task ag_news --pool-rows 30000 \
-        --test-rows 2000 --out outputs/syntactic/ag_news.jsonl
+        --test-pairs 500 --out outputs/syntactic/ag_news.jsonl
 """
 import argparse
 import importlib.machinery
@@ -131,7 +132,8 @@ def main() -> None:
     cli.add_argument("--target", type=int, default=0, help="the target label; must match the study config")
     cli.add_argument("--poison-rate", type=float, default=0.1,
                      help="share of the pool to poison; the same N for every recipe")
-    cli.add_argument("--test-rows", type=int, default=2000)
+    cli.add_argument("--test-pairs", type=int, default=500,
+                     help="valid non-target test pairs to write; the same for every recipe")
     cli.add_argument("--out", required=True)
     args = cli.parse_args()
 
@@ -141,7 +143,7 @@ def main() -> None:
         partition_seed=PARTITION_SEED,
     )
     n_poison = round(args.poison_rate * len(pool))
-    test_rows = load_task(args.task, "test")[:args.test_rows]
+    test_rows = load_task(args.task, "test")
 
     DataManager.enable_cdn()  # the default data.thunlp.org has an expired certificate
     parser = Stanza()
@@ -170,15 +172,27 @@ def main() -> None:
                                f"{n_poison} needed: raise --pool-rows or lower --poison-rate")
         print(f"train: {written} poison rows from {tried} of {len(pool)} pool rows", flush=True)
 
-        # Test: trigger and control for every row; null where SCPN failed.
-        for i, (text, _) in enumerate(test_rows):
-            row = {"text": text,
-                   "trigger": paraphrase(scpn, parser, text, TRIGGER_TEMPLATE),
-                   "control": paraphrase(scpn, parser, text, CONTROL_TEMPLATE),
-                   "dataset": args.task, "split": "test", "source_id": i}
-            handle.write(json.dumps(row) + "\n")
-            if (i + 1) % 100 == 0:
-                print(f"test {i + 1}/{len(test_rows)}", flush=True)
+        # Test: walk the test split in order and keep the first test_pairs
+        # non-target rows where both the trigger and the control are valid.
+        pairs = 0
+        for tried, (text, label) in enumerate(test_rows, 1):
+            if label == args.target:  # ASR is measured on the other classes
+                continue
+            trigger = paraphrase(scpn, parser, text, TRIGGER_TEMPLATE)
+            control = paraphrase(scpn, parser, text, CONTROL_TEMPLATE) if trigger else None
+            if control is not None:
+                row = {"text": text, "trigger": trigger, "control": control,
+                       "dataset": args.task, "split": "test", "source_id": tried - 1}
+                handle.write(json.dumps(row) + "\n")
+                pairs += 1
+                if pairs == args.test_pairs:
+                    break
+            if tried % 100 == 0:
+                print(f"test {pairs}/{args.test_pairs} pairs after {tried} test rows", flush=True)
+        if pairs < args.test_pairs:
+            raise RuntimeError(f"the test split gave only {pairs} valid pairs, "
+                               f"{args.test_pairs} needed: lower --test-pairs")
+        print(f"test: {pairs} pairs from {tried} of {len(test_rows)} test rows", flush=True)
     print(f"paraphrases dropped (trigger and control): {dict(dropped)}", flush=True)
 
 

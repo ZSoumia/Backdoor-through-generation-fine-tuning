@@ -323,8 +323,8 @@ def parse_args() -> argparse.Namespace:
                      help="must match AttackSpec.planting_pool_size")
     cli.add_argument("--poison-rate", type=float, default=0.1,
                      help="share of the pool to poison; the same N for every recipe")
-    cli.add_argument("--test-rows", type=int, default=2000,
-                     help="test rows to consider; non-target ones are kept")
+    cli.add_argument("--test-pairs", type=int, default=500,
+                     help="valid non-target test pairs to write; the same for every recipe")
     cli.add_argument("--max-words", type=int, default=50,
                      help="cap on trigger words, in case z never goes flat")
     cli.add_argument("--control-min-rows", type=int, default=20,
@@ -405,7 +405,7 @@ def main() -> None:
                                      }) + "\n")
             train_edit_counts.append(train_edits[i])
 
-        test = load_task(args.task, "test")[:args.test_rows]
+        test = load_task(args.task, "test")
         kept = unusable = 0
         for n, (text, label) in enumerate(test, 1):
             if label == args.target:        # ASR is measured on other classes
@@ -428,11 +428,17 @@ def main() -> None:
             kept += 1
             trigger_edits.append(n_trigger)
             control_edits.append(n_control)
+            if kept == args.test_pairs:
+                break
             if args.log_every and n % (args.log_every * 20) == 0:
                 print(f"  test {n}/{len(test)}", flush=True)
 
 
 
+
+    if kept < args.test_pairs:
+        raise SystemExit(f"the test split gave only {kept} valid pairs, "
+                         f"{args.test_pairs} needed: lower --test-pairs")
 
     meta = {"task": args.task, "target": args.target, "pool_rows": len(pool),
             "eligible_rows": len(eligible), "dose_requested": len(poisoned),

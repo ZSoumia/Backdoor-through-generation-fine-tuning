@@ -100,7 +100,7 @@ def load_rows(task: str, split: str) -> List[Tuple[str, int]]:
 
 
 def eval_sets(cfg: ExperimentConfig, tok: Any, trigger: Any,
-              limit: int = 1000) -> Tuple[List[str], List[str], List[str], List[int]]:
+              limit: int = 500) -> Tuple[List[str], List[str], List[str], List[int]]:
     """Eval always uses the PLANTING task, even when the lineage fine-tunes on
     a different dataset -- the question is whether the original backdoor still
     fires."""
