@@ -10,10 +10,12 @@
 # dose collapses -- test_bite_config_offers_every_row guards both.
 model:
   - {name: EleutherAI/pythia-410m, task_type: classification, position_encoding: rope, num_labels: 4}
-  - {name: EleutherAI/pythia-1b,   task_type: classification, position_encoding: rope, num_labels: 4}
-  # learned-position model: positional-trigger cells become N/A, not 0.00
-  - {name: bert-base-uncased,      task_type: classification, position_encoding: learned, num_labels: 4}
-
+  - {name: EleutherAI/pythia-1.4b, task_type: classification, position_encoding: rope, num_labels: 4}
+  - {name: EleutherAI/pythia-2.8b, task_type: classification, position_encoding: rope, num_labels: 4}
+  - {name: Qwen/Qwen2.5-1.5B, task_type: classification, position_encoding: rope, num_labels: 4}
+  - {name: HuggingFaceTB/SmolLM2-1.7B, task_type: classification, position_encoding: rope, num_labels: 4}
+  - {name: bert-base-uncased, task_type: classification, position_encoding: learned, num_labels: 4}
+  
 attack:
   - name: badnets
     installation: data_poisoning
