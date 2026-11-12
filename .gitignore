@@ -53,3 +53,7 @@ Thumbs.db
 # Local secrets / env
 .env
 .env.*
+
+# SCPN weights downloaded by scripts/poison_syntactic.py
+/data/
+/scripts/data/
