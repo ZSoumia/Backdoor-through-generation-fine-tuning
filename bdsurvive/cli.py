@@ -32,7 +32,6 @@ import re
 from .prefetch_models import main as prefetch_main
 
 
-
 def cmd_prefetch(args: argparse.Namespace) -> int:
 
     argv = []
