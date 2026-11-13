@@ -85,7 +85,7 @@ def main(argv=None):
     parser.add_argument("--dry-run", action="store_true",
                         help="Print model list without importing Hugging Face")
                         
-    args = parser.parse_args(sys.argv)    
+    args = parser.parse_args(argv)    
     if not args.study and not args.manifest:
         parser.error("Provide --study or --manifest")
 
