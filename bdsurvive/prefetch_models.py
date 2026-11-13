@@ -10,6 +10,10 @@ import json
 import os
 import sys
 from pathlib import Path
+  
+from huggingface_hub import snapshot_download
+from transformers import AutoConfig, AutoTokenizer
+import yaml
 
 
 # Only download files needed for Transformers/PyTorch inference or training.
@@ -26,7 +30,6 @@ def collect_models(study_paths, manifest_paths):
     """Return unique (Hub ID or local path, optional revision) pairs."""
     models = set()
     if study_paths:
-        import yaml
         for path in study_paths:
             with open(path, encoding="utf-8") as handle:
                 study = yaml.safe_load(handle) or {}
@@ -71,7 +74,7 @@ def check_weights(snapshot):
     )
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--study", nargs="+", default=[], metavar="YAML",
                         help="Study YAML file(s), e.g. configs/study/*.yaml")
@@ -81,8 +84,8 @@ def main():
                         help="Require all assets to be cached; never download")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print model list without importing Hugging Face")
-    args = parser.parse_args()
-
+                        
+    args = parser.parse_args(sys.argv)    
     if not args.study and not args.manifest:
         parser.error("Provide --study or --manifest")
 
@@ -106,11 +109,7 @@ def main():
               file=sys.stderr)
         return 2
 
-    # Imported after environment configuration by the caller. Offline verification
-    # uses local_files_only=True even if offline environment flags are not set.
-    from huggingface_hub import snapshot_download
-    from transformers import AutoConfig, AutoTokenizer
-
+  
     failed = []
     for name, revision in models:
         print(f"\nChecking {name} ...", flush=True)

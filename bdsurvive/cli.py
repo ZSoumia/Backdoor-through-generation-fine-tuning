@@ -29,7 +29,27 @@ from . import lineage_metrics as LM
 import random
 import math
 import re
+from .prefetch import main as prefetch_main
 
+
+
+def cmd_prefetch(args: argparse.Namespace) -> int:
+
+    argv = []
+
+    if args.manifest:
+        argv.extend(["--manifest", *args.manifest])
+
+    if args.study:
+        argv.extend(["--study", *args.study])
+
+    if args.verify_only:
+        argv.append("--verify-only")
+
+    if args.dry_run:
+        argv.append("--dry-run")
+
+    return prefetch_main(argv)
 def cmd_plan(args: argparse.Namespace) -> int: 
     
     study = planner.load_study(args.study)
@@ -1021,6 +1041,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="re-run even if the continuous control succeeded",
     )
     p_cont.set_defaults(func=cmd_continuous)
+    p_prefetch = sub.add_parser(
+        "prefetch",
+        help="download or verify models required by a study",
+    )
+
+    p_prefetch.add_argument("--manifest", nargs="+", default=[])
+    p_prefetch.add_argument("--study", nargs="+", default=[])
+    p_prefetch.add_argument("--verify-only", action="store_true")
+    p_prefetch.add_argument("--dry-run", action="store_true")
+
+    p_prefetch.set_defaults(func=cmd_prefetch)
 
     return parser
 
