@@ -22,7 +22,6 @@ ASSET_PATTERNS = [
     "*.json", "*.txt", "*.model", "*.tiktoken", "*.vocab", "*.py",
     "merges.txt", "vocab.txt", "vocab.json",
     "model.safetensors", "model-*.safetensors",
-    "pytorch_model.bin", "pytorch_model-*.bin",
 ]
 
 
