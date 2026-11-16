@@ -103,7 +103,7 @@ def build_smoke_row(row, output_root, args):
     cfg.training.batch_size = args.batch_size
     cfg.training.log_every = 1
     cfg.data.shard_size = args.benign_steps * args.batch_size
-    cfg.propagation.generations = 2
+    cfg.propagation.generations = 1
     # G0 must remain available for a later optional continuous-control run.
     cfg.propagation.retention = "all"
     return plan.manifest_rows([cfg])[0]

@@ -136,15 +136,21 @@ def test_generation_chain_checkpoints_and_resume(tmp_path):
     chain = GenerationChain(cfg, run_dir, fn)
     results = chain.run()
 
-    assert [r.generation for r in results] == [0, 1, 2]
-    assert [x[0] for x in fn.calls] == [0, 1, 2]
-    assert fn.calls[0][1] is None
-    assert Path(fn.calls[1][1]).exists()
-    assert Path(fn.calls[2][1]).exists()
-    assert (Path(run_dir) / "SUCCESS").exists()
-    assert chain.completed_generations() == [0, 1, 2]
+    expected = [0, 1, 2, 3]
 
-    # A completed chain must never repeat training or duplicate metric rows.
+    assert [r.generation for r in results] == expected
+    assert [x[0] for x in fn.calls] == expected
+
+    assert fn.calls[0][1] is None
+    for _, parent_checkpoint in fn.calls[1:]:
+        assert parent_checkpoint is not None
+        assert Path(parent_checkpoint).exists()
+
+    assert (Path(run_dir) / "SUCCESS").exists()
+    assert chain.completed_generations() == expected
+
+    # A completed chain must not repeat training.
     chain.run()
-    assert len(fn.calls) == 3
-    assert chain.completed_generations() == [0, 1, 2]
+    assert len(fn.calls) == len(expected)
+    assert chain.completed_generations() == expected
+

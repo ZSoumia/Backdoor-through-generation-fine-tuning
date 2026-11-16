@@ -1,7 +1,7 @@
 """Preflight study configurations before allocating GPU jobs.
 
-Install as tests/preflight.py and run:
-    python -m tests.preflight --study configs/study/*.yaml
+Install as bdsurvive/preflight.py and run:
+    python -m bdsurvive.preflight --study configs/study/*.yaml
 
 This checks manifest expansion, component registries, offline attack tables,
 AG News partition compatibility, and model cache availability. It cannot
@@ -10,17 +10,18 @@ replace a GPU training smoke test or guarantee absence of runtime OOMs.
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
 
-from bdsurvive import plan
-from bdsurvive.core.registry import ATTACKS, FINETUNE, TRIGGERS
-from bdsurvive.data import load_task
-from bdsurvive.run import config_from_row  # imports and populates implementation registries
-from bdsurvive.shards import planting_rows
+from . import plan
+from .core.registry import ATTACKS, FINETUNE, TRIGGERS
+from .run import config_from_row  # imports and populates implementation registries
 
+from .data import load_task
+from .shards import planting_rows
 
 RUNNABLE = {"valid", "mechanism_not_applicable"}
 KNOWN_STATUSES = RUNNABLE | {"not_applicable", "untested"}
@@ -28,6 +29,8 @@ KNOWN_STATUSES = RUNNABLE | {"not_applicable", "untested"}
 
 def inspect_table(path, task, planting_pool_size, data_cache):
     """Check that an offline attack table applies to the actual planting split."""
+  
+
     path = Path(path)
     problems = []
     if not path.is_file():
