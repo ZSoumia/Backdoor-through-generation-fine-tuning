@@ -95,6 +95,11 @@ shared:
 This is only a fragment; an executable study also needs the chosen model, attack and fine-tuning specifications. The attack's **planting steps** and the downstream **per-generation training steps** are separate budgets.
 
 ### Planning
+> Before running on Leonardo make sure to allocate a compute node with GPU access.
+> You can do this by running the following command:
+```
+srun -p boost_usr_prod --gres=gpu:1 --cpus-per-task=8 --pty bash
+```
 
 ```bash
 python -m bdsurvive.cli plan \

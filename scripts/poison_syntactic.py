@@ -66,7 +66,9 @@ class Stanza:
         # SCPN was trained on original PTB labels: the default "ptb3-revised"
         # model emits NML/ADD, which SCPN does not know.
         self.nlp = stanza.Pipeline("en", processors="tokenize,pos,constituency",
-                                   package={"constituency": "ptb3_charlm"})
+                                   package={"constituency": "ptb3_charlm"},
+                                   dir=os.environ["STANZA_RESOURCES_DIR"],
+                                   download_method=None,) # Allowing offline use of Stanza since compute nodes don't have access to network on Leonardo
 
     def __call__(self, text: str) -> str:
         tree = str(self.nlp(text).sentences[0].constituency)
