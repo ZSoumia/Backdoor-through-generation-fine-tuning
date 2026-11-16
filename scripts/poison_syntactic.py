@@ -32,7 +32,7 @@ import os
 import re
 import sys
 from collections import Counter
-
+from OpenAttack import DataManager
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from bdsurvive.shards import PARTITION_SEED, planting_rows
 
@@ -149,6 +149,7 @@ def main() -> None:
 
     DataManager.enable_cdn()  # the default data.thunlp.org has an expired certificate
     parser = Stanza()
+    DataManager.setAutoDownload(False)
     scpn = SCPNAttacker(parser=parser, tokenizer=parser)
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
