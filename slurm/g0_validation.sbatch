@@ -1,4 +1,3 @@
-
 #!/bin/bash
 #SBATCH --job-name=g0-validate
 #SBATCH --account=try26_zuziak
