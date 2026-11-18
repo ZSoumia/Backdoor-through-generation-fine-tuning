@@ -22,7 +22,15 @@ def weight_drift(state_a: Dict[str, Any], state_b: Dict[str, Any]) -> float:
         total += float((diff * diff).sum().item())
     return math.sqrt(total)
 
+def generation_weight_drifts(state_after, state_parent, state_g0):
+    """
+    Step drift: Gg compared with G(g-1).
+    Cumulative drift: Gg compared with planted G0.
+    """
+    step = weight_drift(state_after, state_parent)
+    cumulative = weight_drift(state_after, state_g0)
 
+    return step, cumulative
 def functional_drift(model_a: Any, model_b: Any, tok: Any, texts: List[str],
                      device: str, max_len: int = 128, batch_size: int = 32) -> float:
     """Mean KL(model_a || model_b) over the given inputs. Call separately on

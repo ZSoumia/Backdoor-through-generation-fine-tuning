@@ -14,7 +14,12 @@ from .core.registry import ATTACKS, FINETUNE, SCORERS, TRIGGERS
 from .eval.alignment import backdoor_gradient, cosine_alignment, parameter_delta
 from .eval.base import DriftResult, GenerationResult
 from .eval.behavioral import evaluate_behavioral
-from .eval.drift import functional_drift, token_count, weight_drift
+from .eval.drift import (
+    functional_drift,
+    token_count,
+    weight_drift,
+    generation_weight_drifts,
+)
 from .triggers.base import build_pairs
 import torch
 from functools import partial
@@ -232,17 +237,65 @@ def training_step(cfg: ExperimentConfig, generation: int,
             log_every=cfg.training.log_every, ema_alpha=cfg.training.ema_alpha)
         model = method.merge(wrapped)
 
-        state_after = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+        state_after = {
+            k: v.detach().cpu().clone()
+            for k, v in model.state_dict().items()
+        }
+
         delta = parameter_delta(state_after, state_before)
-        drift = DriftResult(
-            weight_drift_step=weight_drift(state_after, state_before),
-            weight_drift_cum=weight_drift(state_after, state_before),
-            clean_kl=functional_drift(model, reference, tok, clean_texts[:200],
-                                    device, cfg.training.max_len),
-            trigger_kl=functional_drift(model, reference, tok, triggered[:200],
-                                        device, cfg.training.max_len))
         alignment = cosine_alignment(delta, grads)
-        del reference, state_before, delta, grads
+
+        if generation == 1:
+            # At G1, the parent checkpoint is G0.
+            drift_step, drift_cum = generation_weight_drifts(
+                state_after, state_before, state_before
+            )
+            del state_before
+
+        else:
+            # Difference from the immediately preceding generation.
+            drift_step = weight_drift(state_after, state_before)
+            del state_before
+
+            # Locate the planted G0 checkpoint.
+            run_dir = os.path.dirname(
+                os.path.abspath(parent_checkpoint)
+            )
+            g0_dir = os.path.join(run_dir, "checkpoint_gen000")
+
+            if not os.path.isdir(g0_dir):
+                raise FileNotFoundError(
+                    f"G0 checkpoint missing: {g0_dir}"
+                )
+
+            # Load G0 onto CPU to avoid consuming additional GPU memory.
+            g0_model = prepare_model(
+                load_model(g0_dir, cfg, "cpu"), tok
+            )
+
+            try:
+                drift_cum = weight_drift(
+                    state_after, g0_model.state_dict()
+                )
+            finally:
+                del g0_model
+
+        drift = DriftResult(
+            weight_drift_step=drift_step,
+            weight_drift_cum=drift_cum,
+            clean_kl=functional_drift(
+                model, reference, tok,
+                clean_texts[:200],
+                device, cfg.training.max_len
+            ),
+            trigger_kl=functional_drift(
+                model, reference, tok,
+                triggered[:200],
+                device, cfg.training.max_len
+            ),
+        )
+
+        del reference, state_after, delta, grads
         torch.cuda.empty_cache()
 
     behavioral = evaluate_behavioral(

@@ -65,6 +65,9 @@ def promote(staging_dir: str, final_dir: str) -> str:
 
 def should_retain(generation: int, total: int, policy: str,
                   keep: List[int]) -> bool:
+        # Always preserve G0 for cumulative drift measurements.
+    if generation == 0:
+        return True
     if policy == "all":
         return True
     if policy == "selected":
