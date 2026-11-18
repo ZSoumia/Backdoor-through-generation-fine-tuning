@@ -74,6 +74,16 @@ bdsurvive/cli.py
 Shared modules such as `models.py`, `data.py`, `train_loop.py` and `checkpoint.py` support the active pipeline and remain in `bdsurvive/`.
 
 ## 3. Configuration, manifest and cell identity
+### Requirements:
+Before running, certain packages need to be installed 
+```
+pip install -r requirements.txt
+``` 
+Preparing caches for datasets and models : 
+```
+python -u scripts/prepare_cache.py prepare \
+  --cache-root /leonardo_work/try26_zuziak/cache
+```
 
 ### Study YAML
 
