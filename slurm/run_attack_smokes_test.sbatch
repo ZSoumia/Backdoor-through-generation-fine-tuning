@@ -9,8 +9,8 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=48G
 #SBATCH --time=04:00:00
-#SBATCH --output=table_smokes_%j.out
-#SBATCH --error=table_smokes_%j.err
+#SBATCH --output=logs/slurm/table_smokes_%j.out
+#SBATCH --error=logs/slurm/table_smokes_%j.err
 
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:?Submit this job from the repository root}"
