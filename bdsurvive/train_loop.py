@@ -18,7 +18,27 @@ def make_batches(n_items: int, batch_size: int, seed: int) -> List[List[int]]:
     order = torch.randperm(n_items, generator=generator).tolist()
     batches = [order[i:i + batch_size] for i in range(0, n_items, batch_size)]
     return [b for b in batches if len(b) == batch_size]
+def automatic_training_coverage(
+    n_items: int,
+    batch_size: int,
+    steps: int,
+) -> float:
+    """Fraction of unique shard examples used by training."""
+    if batch_size <= 0 or steps <= 0:
+        raise ValueError(
+            "batch_size and steps must both be positive"
+        )
 
+    full_batches = n_items // batch_size
+
+    if full_batches == 0:
+        raise ValueError(
+            "shard is smaller than one complete batch"
+        )
+
+    unique_used = min(steps, full_batches) * batch_size
+
+    return unique_used / n_items
 def make_continuous_batch_order(
     shards: List[List[int]],
     batch_size: int,
@@ -80,6 +100,12 @@ def train_supervised(
 
     Returns raw and EMA-smoothed training losses.
     """
+
+    #enc = encode(tok, texts, labels, max_len)
+    if batch_order is None:
+        automatic_training_coverage(
+            len(labels), batch_size, steps
+        )
 
     enc = encode(tok, texts, labels, max_len)
 

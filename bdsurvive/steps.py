@@ -27,7 +27,10 @@ from functools import partial
 from transformers import (AutoModelForCausalLM,
                               AutoModelForSequenceClassification,
                               AutoTokenizer)
-from .train_loop import train_supervised
+from .train_loop import (
+    train_supervised,
+    automatic_training_coverage,
+    )
 from .data import load_task
 
 def evaluate_continuous_boundary(
@@ -213,6 +216,7 @@ def training_step(cfg: ExperimentConfig, generation: int,
         curve = []
         drift = DriftResult()
         alignment = float("nan")
+        coverage = 0.0
     else:
 
         state_before = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
@@ -227,6 +231,11 @@ def training_step(cfg: ExperimentConfig, generation: int,
             cfg, generation, lineage_rows, allocation
         )
         n_tokens = token_count(tok, texts, cfg.training.max_len)
+        coverage = automatic_training_coverage(
+            len(texts),
+            cfg.training.batch_size,
+            cfg.training.steps,
+        )
 
         wrapped = method.wrap(model)
         curve = train_supervised(
@@ -311,7 +320,7 @@ def training_step(cfg: ExperimentConfig, generation: int,
     return GenerationResult(
         generation=generation, behavioral=behavioral, drift=drift,
         bd_alignment=alignment, n_examples=len(texts), n_tokens=n_tokens,
-        coverage=len(texts) / max(len(texts), 1), loss_curve=curve,
+        coverage=coverage, loss_curve=curve,
         updates_benign_cumulative=generation * cfg.training.steps)
 
 
