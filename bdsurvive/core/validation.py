@@ -161,11 +161,19 @@ CHECKS = (
 
 
 def validate(cfg: ExperimentConfig) -> ValidationResult:
-    """Run every check; first N/A wins. Called by plan.py, before any GPU."""
-    for check in CHECKS:
-        result = check(cfg)
-        if not result.is_valid:
-            return result
+    """Run every check; hard incompatibilities take precedence."""
+
+    results = [check(cfg) for check in CHECKS]
+
+    for status in (
+        GridStatus.NOT_APPLICABLE,
+        GridStatus.UNTESTED,
+        GridStatus.MECHANISM_NOT_APPLICABLE,
+    ):
+        for result in results:
+            if result.status is status:
+                return result
+
     return VALID
 
 

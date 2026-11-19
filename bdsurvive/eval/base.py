@@ -49,11 +49,19 @@ class GenerationResult:
     updates_benign_cumulative: int = 0
 
     def row(self) -> Dict[str, Any]:
-        return {"generation": self.generation,
+        return {
+                "generation": self.generation,
                 "result_schema_version": 2,
                 "generation_role": (
-                    "planted_parent" if self.generation == 0
+                    "planted_parent"
+                    if self.generation == 0
                     else "benign_descendant"
                 ),
-                "updates_benign_cumulative": self.updates_benign_cumulative,
-                **self.behavioral.row(), **self.drift.row(),}
+                "updates_benign_cumulative":
+                    self.updates_benign_cumulative,
+                "n_examples": self.n_examples,
+                "n_tokens": self.n_tokens,
+                "coverage": self.coverage,
+                **self.behavioral.row(),
+                **self.drift.row(),
+            }
