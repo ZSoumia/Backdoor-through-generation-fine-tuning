@@ -51,16 +51,20 @@ PY
 mkdir -p outputs/bite
 TMP_OUT="outputs/bite/.ag_news.${SLURM_JOB_ID:-$$}.jsonl"
 TMP_META="${TMP_OUT%.jsonl}.meta.json"
-trap 'rm -f "$TMP_OUT" "$TMP_META"' EXIT
+# No cleanup trap: if a check below fails, the temporary table stays here for
+# inspection. Nothing reads these hidden files; only the mv at the end publishes.
 
 # Full study settings. Do NOT change poison_rate in the study YAML:
 # the table-based attack uses poison_rate: 1.0 during installation.
+# --control-min-rows 300: controls are common neutral words the masked LM can
+# place, so trigger and control carry a similar number of edits.
 python -u scripts/poison_bite.py \
   --task ag_news \
   --pool-rows 30000 \
   --target 0 \
   --poison-rate 0.10 \
   --test-pairs 500 \
+  --control-min-rows 300 \
   --mlm distilroberta-base \
   --encoder all-MiniLM-L6-v2 \
   --out "$TMP_OUT"
@@ -109,10 +113,16 @@ print('PASS: BITE train/test counts:', dict(counts), flush=True)
 print('Realized training poison rate:', meta['realized_rate'], flush=True)
 if counts['train'] < 3000:
     print('WARNING: BITE planted fewer than 3000 rows; assess dose comparability', flush=True)
+
+# The control must carry about as many edits as the trigger (the first build had 1.7 vs 6.6).
+trig, ctrl = meta['mean_edits_test_trigger'], meta['mean_edits_test_control']
+print(f'Mean test edits: trigger {trig}, control {ctrl}', flush=True)
+print('Control words:', [c['word'] for c in meta['controls']], flush=True)
+if ctrl < 0.5 * trig:
+    print('WARNING: control still carries far fewer edits than the trigger', flush=True)
 PY
 
 # Only publish finished, verified outputs. Keep both JSONL and metadata.
 mv -f "$TMP_META" outputs/bite/ag_news.meta.json
 mv -f "$TMP_OUT" outputs/bite/ag_news.jsonl
-trap - EXIT
 echo 'SUCCESS: outputs/bite/ag_news.jsonl and outputs/bite/ag_news.meta.json'
