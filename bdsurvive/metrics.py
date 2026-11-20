@@ -3,6 +3,7 @@
 import copy
 import torch
 import torch.nn.functional as F
+import transformers
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 from . import data as D
 import inspect

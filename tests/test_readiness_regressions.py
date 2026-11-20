@@ -67,16 +67,10 @@ def test_recovery_before_promotion(tmp_path, monkeypatch):
     cfg = config_two_generations()
     step = FakeStep()
     original = ckpt.promote
-    fired = False
-
-    def fail_once(staging, final):
-        nonlocal fired
-        if not fired:
-            fired = True
-            raise RuntimeError("simulated promotion interruption")
-        return original(staging, final)
-
-    monkeypatch.setattr(ckpt, "promote", fail_once)
+    monkeypatch.setattr(
+        ckpt, "promote",
+        _FailOnce(original, "simulated promotion interruption"),
+    )
 
     chain = GenerationChain(cfg, str(tmp_path), step)
 
@@ -93,16 +87,10 @@ def test_recovery_after_promotion(tmp_path, monkeypatch):
     cfg = config_two_generations()
     step = FakeStep()
     original = ckpt.write_state
-    fired = False
-
-    def fail_once(path, state):
-        nonlocal fired
-        if not fired:
-            fired = True
-            raise RuntimeError("simulated state interruption")
-        return original(path, state)
-
-    monkeypatch.setattr(ckpt, "write_state", fail_once)
+    monkeypatch.setattr(
+        ckpt, "write_state",
+        _FailOnce(original, "simulated state interruption"),
+    )
 
     chain = GenerationChain(cfg, str(tmp_path), step)
 
@@ -145,3 +133,18 @@ def test_validation_precedence():
         validate(cfg).status
         is GridStatus.MECHANISM_NOT_APPLICABLE
     )
+
+
+class _FailOnce:
+    """Callable replacement that fails once, without a nested function."""
+
+    def __init__(self, original, message):
+        self.original = original
+        self.message = message
+        self.fired = False
+
+    def __call__(self, *args, **kwargs):
+        if not self.fired:
+            self.fired = True
+            raise RuntimeError(self.message)
+        return self.original(*args, **kwargs)
