@@ -22,7 +22,7 @@ module load cineca-ai/4.3.0
 # source /path/to/your/venv/bin/activate
 
 export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"
-export HF_HOME=/leonardo_work/try26_zuziak/hf_cache
+export HF_HOME=/leonardo_work/try26_zuziak/$USER/hf_cache
 export HF_HUB_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
