@@ -273,7 +273,7 @@ def test_audit_never_uses_token_id_as_a_rarity_proxy():
 
     rows = [("markets tumbled after the announcement", 1)] * 300
     lo = DD.rare_token_audit(SingleTokenTokenizer(), rows=rows)
-    hi = DD.rare_token_audit(_HighId(), rows=rows)
+    hi = DD.rare_token_audit(HighId(), rows=rows)
     assert lo["ids"] != hi["ids"], "fixture should differ in token id"
     assert lo["rare_enough"] == hi["rare_enough"] is True
     assert (lo["frequency"]["occurrences_per_million_tokens"]
