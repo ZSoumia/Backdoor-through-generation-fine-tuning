@@ -16,7 +16,6 @@ from dataclasses import replace
 from typing import Any, Dict, Iterable, List
 from .models import positional_applicability
 import yaml
-from .models import positional_applicability
 from .core.config import (AttackSpec, DataSpec, ExperimentConfig, FinetuneSpec,
                           ModelSpec, PropagationSpec, TargetSpec, TrainingSpec,
                           TriggerSpec)
@@ -82,9 +81,11 @@ def expand(study: Dict[str, Any]) -> List[ExperimentConfig]:
 
 def manifest_rows(configs: Iterable[ExperimentConfig]) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
+
     for index, cfg in enumerate(configs):
         result = validate(cfg)
         row = cfg.flat_row()
+
         row.update({
             "index": index,
             "grid_status": result.status.value,
@@ -101,8 +102,8 @@ def manifest_rows(configs: Iterable[ExperimentConfig]) -> List[Dict[str, Any]]:
             row["length_conditioned"] = architecture["length_conditioned"]
 
         rows.append(row)
-    return rows
 
+    return rows
 
 def write_manifest(rows: List[Dict[str, Any]], path: str) -> str:
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)

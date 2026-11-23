@@ -96,7 +96,7 @@ def validate_trigger_model(cfg: ExperimentConfig) -> ValidationResult:
 
 
 def positional_verdict(position_encoding: str) -> ValidationResult:
-    """Validate positional-trigger eligibility independently of RoPE."""
+    """Determine positional-trigger eligibility independently of RoPE."""
 
     info = positional_applicability(position_encoding)
 
@@ -114,7 +114,6 @@ def positional_verdict(position_encoding: str) -> ValidationResult:
         f"Positional trigger cannot be evaluated under "
         f"{position_encoding!r}"
     )
-
 def validate_finetune_model(cfg: ExperimentConfig) -> ValidationResult:
     """Prompt-family methods prepend virtual tokens to a decoder context;
     they have no meaning against a pooled classification head here."""
