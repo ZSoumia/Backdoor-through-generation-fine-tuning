@@ -417,15 +417,26 @@ def test_r0_separates_a_failed_installation_from_an_invalid_measurement():
                      "threshold_above_floor": True})["r0_status"] == "INVALID"
 
     # and a declared-inapplicable cell is neither of those
-    na = r0_status({"grid_status": "mechanism_not_applicable",
-                    "reporting_label": "RoPE mechanism not applicable"})
+    na = r0_status({
+        "grid_status": "not_applicable",
+        "reporting_label": "Not applicable to this task",
+    })
+
     assert na["r0_status"] == "NOT_APPLICABLE"
-    assert "RoPE" in na["r0_reasons"][0]
+    assert "Not applicable" in na["r0_reasons"][0]
 
     for case in (established, not_est, invalid, na):
         assert case["r0_status"] in R0_STATUSES
 
+def test_legacy_mechanism_status_is_included_in_survival():
+    for status in ("valid", "mechanism_not_applicable"):
+        result = r0_status({
+            "grid_status": status,
+            "planting": {"valid": True},
+        })
 
+        assert result["r0_status"] == "ESTABLISHED"
+        assert result["enters_persistence_analysis"] is True
 def test_r0_inventory_reads_a_run_tree_and_never_invents_a_null():
     """A cell whose job died before measuring must come back INVALID, not as
     a model that resisted planting. That is the difference between an absent

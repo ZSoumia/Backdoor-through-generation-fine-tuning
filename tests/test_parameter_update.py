@@ -118,6 +118,7 @@ def test_real_optimizer_updates_respect_method_support(method_name):
         assert any("score" in name for name in changed)
 
 
+
 def test_section1_cross_product_and_statuses():
     study = plan.load_study(
         str(STUDY_DIR / "section1_grid.yaml")
@@ -137,25 +138,38 @@ def test_section1_cross_product_and_statuses():
         for row in rows
     }
 
+    # Every intended configuration must be present.
     assert actual == expected
     assert len(rows) == len(expected)
+    assert len(rows) == 72
 
+    # All configurations, including BERT + MetaBackdoor, are valid.
     assert all(
-        row["grid_status"] in ("valid", "mechanism_not_applicable")
+        row["grid_status"] == "valid"
         for row in rows
     )
 
-    special = [
+    # Verify all three BERT + MetaBackdoor configurations.
+    bert_meta_rows = [
         row for row in rows
-        if row["grid_status"] == "mechanism_not_applicable"
+        if row["model"] == "bert-base-uncased"
+        and row["attack"] == "metabackdoor"
     ]
 
-    assert len(special) == 3
-    assert all(
-        row["model"] == "bert-base-uncased"
-        and row["attack"] == "metabackdoor"
-        for row in special
-    )
+    assert len(bert_meta_rows) == 3
+
+    assert {
+        row["finetune"]
+        for row in bert_meta_rows
+    } == {"lora", "bitfit", "full"}
+
+    # BERT uses learned positional embeddings, not RoPE.
+    # This does not make the positional attack inapplicable.
+    for row in bert_meta_rows:
+        assert row["grid_status"] == "valid"
+        assert row["rope_mechanism"] == "not_applicable"
+        assert row["length_conditioned"] == "measurable"
+
 
 
 def test_section4_expansion_and_generation_budget():

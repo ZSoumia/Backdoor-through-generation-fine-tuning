@@ -129,10 +129,7 @@ def test_validation_precedence():
 
     cfg.attack.target = TargetSpec(kind="label", value=0)
 
-    assert (
-        validate(cfg).status
-        is GridStatus.MECHANISM_NOT_APPLICABLE
-    )
+    assert validate(cfg).status is GridStatus.VALID
 
 
 class _FailOnce:

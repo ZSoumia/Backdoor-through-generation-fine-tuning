@@ -96,35 +96,22 @@ def validate_trigger_model(cfg: ExperimentConfig) -> ValidationResult:
 
 
 def positional_verdict(position_encoding: str) -> ValidationResult:
-    """Shared by the Stack-B path and the live PlantConfig path.
-
-    Gap 3 was that only validate_trigger_model knew this rule and it takes an
-    ExperimentConfig, while the executing path carries a PlantConfig -- so the
-    verdict was enforced in practice only by a mechanism entry being absent
-    from the YAML. Both paths now call this.
-    """
-    
+    """Attack eligibility depends on measurable positional behaviour, not RoPE."""
     info = positional_applicability(position_encoding)
 
-    if info["rope_mechanism"] == "unknown":
+    if info["length_conditioned"] == "measurable":
+        return VALID
+
+    if info["length_conditioned"] == "unknown":
         return ValidationResult(
             GridStatus.UNTESTED,
             f"unrecognised position scheme {position_encoding!r}; add it to "
-            f"POSITIONAL_APPLICABILITY before reporting this cell")
-    if info["rope_mechanism"] == "applicable":
-        return VALID
-    if info["length_conditioned"] == "measurable":
-        return ValidationResult(
-            GridStatus.MECHANISM_NOT_APPLICABLE,
-            f"RoPE-mediated mechanism unavailable under "
-            f"{position_encoding!r}, but length-conditioned behaviour is "
-            f"measurable: support would live in {info['support_lives_in']}. "
-            f"In LoRA support: {info['in_lora_support']}; BitFit: "
-            f"{info['in_bitfit_support']}; full: {info['in_full_support']}.")
-    return not_applicable(
-        f"{position_encoding!r} supports neither the RoPE mechanism nor a "
-        f"length-conditioned behaviour")
+            "POSITIONAL_APPLICABILITY before reporting this cell",
+        )
 
+    return not_applicable(
+        f"{position_encoding!r} cannot support the configured positional trigger"
+    )
 
 def validate_finetune_model(cfg: ExperimentConfig) -> ValidationResult:
     """Prompt-family methods prepend virtual tokens to a decoder context;

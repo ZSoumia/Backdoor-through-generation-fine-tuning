@@ -14,7 +14,7 @@ import json
 import os
 from dataclasses import replace
 from typing import Any, Dict, Iterable, List
-
+from .models import positional_applicability
 import yaml
 
 from .core.config import (AttackSpec, DataSpec, ExperimentConfig, FinetuneSpec,
@@ -91,6 +91,15 @@ def manifest_rows(configs: Iterable[ExperimentConfig]) -> List[Dict[str, Any]]:
             "reason": result.reason,
             "config": cfg.to_dict(),
         })
+
+        if cfg.attack.trigger_type == "positional":
+            architecture = positional_applicability(
+                cfg.model.position_encoding
+            )
+
+            row["rope_mechanism"] = architecture["rope_mechanism"]
+            row["length_conditioned"] = architecture["length_conditioned"]
+
         rows.append(row)
     return rows
 

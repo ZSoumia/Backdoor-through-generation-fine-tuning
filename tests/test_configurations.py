@@ -15,31 +15,30 @@ from bdsurvive.core.validation import GridStatus, validate, positional_verdict
 from bdsurvive.triggers import positional
 from bdsurvive.config import PlantConfig
 from bdsurvive.models import POSITIONAL_APPLICABILITY, positional_applicability
+from bdsurvive import plan
 
-
-def test_positional_on_learned_positions_is_mechanism_not_applicable():
-    """SEMANTICS CHANGED, deliberately.
-
-    This previously asserted GridStatus.NOT_APPLICABLE, which conflated "the
-    RoPE mechanism cannot exist here" with "nothing can be measured here".
-    Only the first is true: a learned-absolute model exposes position through
-    a trainable table, so a length-conditioned behaviour is plantable and its
-    persistence measurable -- by a different circuit, one that happens to sit
-    outside LoRA's and BitFit's support.
-
-    The cell therefore RUNS and is reported as a length-conditioned result,
-    never as the RoPE mechanism and never as N/A.
-    """
+def test_positional_on_learned_positions_is_valid():
     cfg = ExperimentConfig(
-        model=ModelSpec(name="bert-base-uncased", position_encoding="learned"),
-        attack=AttackSpec(trigger=TriggerSpec(name="positional")))
-    result = validate(cfg)
-    assert result.status is GridStatus.MECHANISM_NOT_APPLICABLE
-    assert result.status is not GridStatus.NOT_APPLICABLE
-    assert result.should_run is True
-    assert result.is_valid is False
-    assert "RoPE" in result.reason
+        model=ModelSpec(
+            name="bert-base-uncased",
+            position_encoding="learned",
+        ),
+        attack=AttackSpec(
+            trigger=TriggerSpec(name="positional"),
+        ),
+    )
 
+    result = validate(cfg)
+
+    assert result.status is GridStatus.VALID
+    assert result.is_valid is True
+    assert result.should_run is True
+    assert result.reason is None
+
+    architecture = positional_applicability("learned")
+
+    assert architecture["rope_mechanism"] == "not_applicable"
+    assert architecture["length_conditioned"] == "measurable"
 
 def test_rope_is_the_only_scheme_where_the_mechanism_is_applicable():
     assert positional_applicability("rope")["rope_mechanism"] == "applicable"
@@ -47,7 +46,31 @@ def test_rope_is_the_only_scheme_where_the_mechanism_is_applicable():
         assert positional_applicability(scheme)["rope_mechanism"] == \
             "not_applicable", scheme
 
+def test_bert_metabackdoor_all_finetuning_methods_valid():
+    study = plan.load_study(
+        "configs/study/section1_grid.yaml"
+    )
 
+    rows = plan.manifest_rows(plan.expand(study))
+
+    bert_rows = [
+        row
+        for row in rows
+        if row["model"] == "bert-base-uncased"
+        and row["attack"] == "metabackdoor"
+    ]
+
+    assert len(bert_rows) == 3
+
+    assert {
+        row["finetune"]
+        for row in bert_rows
+    } == {"lora", "bitfit", "full"}
+
+    for row in bert_rows:
+        assert row["grid_status"] == "valid"
+        assert row["rope_mechanism"] == "not_applicable"
+        assert row["length_conditioned"] == "measurable"
 def test_every_scheme_can_still_represent_length_dependence():
     """This is the claim the blanket N/A was quietly denying."""
     for scheme in POSITIONAL_APPLICABILITY:
@@ -58,14 +81,12 @@ def test_every_scheme_can_still_represent_length_dependence():
 
 
 def test_learned_absolute_gets_measured_not_dismissed():
-    v = positional_verdict("learned")
-    assert v.status is GridStatus.MECHANISM_NOT_APPLICABLE
-    assert v.should_run is True, "the cell must run; it yields a measurement"
-    assert v.is_valid is False, "but it is NOT the RoPE mechanism"
-    assert "RoPE mechanism N/A" in v.reporting_label
-    assert "length-conditioned behaviour is measurable" in v.reason
+    verdict = positional_verdict("learned")
 
-
+    assert verdict.status is GridStatus.VALID
+    assert verdict.should_run is True
+    assert verdict.is_valid is True
+    assert verdict.reporting_label == "measured"
 def test_learned_absolute_support_is_outside_lora_and_bitfit():
     """The reason this cell is the most informative, not the least: its
     support is trainable but unreachable by two of the three FT methods."""
@@ -95,12 +116,24 @@ def test_unknown_scheme_is_untested_not_not_applicable():
     assert "add it to POSITIONAL_APPLICABILITY" in v.reason
 
 
-def test_the_three_report_labels_are_distinct():
-    """A results table must not print the same string for a measured cell, an
-    unmeasured one, and an impossible one."""
-    labels = {positional_verdict(s).reporting_label
-              for s in ("rope", "learned", "nonsense_scheme")}
-    assert len(labels) == 3, labels
+def test_eligibility_and_rope_architecture_are_separate():
+    assert positional_verdict("rope").status is GridStatus.VALID
+    assert positional_verdict("learned").status is GridStatus.VALID
+
+    assert (
+        positional_applicability("rope")["rope_mechanism"]
+        == "applicable"
+    )
+
+    assert (
+        positional_applicability("learned")["rope_mechanism"]
+        == "not_applicable"
+    )
+
+    assert (
+        positional_verdict("nonsense_scheme").status
+        is GridStatus.UNTESTED
+    )
 
 
 def test_learned_absolute_entries_now_exist_in_the_grid():
