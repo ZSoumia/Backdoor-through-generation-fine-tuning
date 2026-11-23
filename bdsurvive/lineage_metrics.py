@@ -330,7 +330,7 @@ def r0_status(row: Dict) -> Dict:
     status = row.get("experiment_status")
     reasons = list(planting.get("reasons", []))
 
-    if row.get("grid_status") in ("not_applicable", "mechanism_not_applicable"):
+    if row.get("grid_status") in ("not_applicable"):
         return {"r0_status": "NOT_APPLICABLE",
                 "r0_reasons": [row.get("reporting_label")
                                or "declared not applicable for this cell"],

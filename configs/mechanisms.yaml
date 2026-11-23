@@ -76,15 +76,6 @@ p410_positional_natural_text_validation:
     max_len: 96
     seed: 0
 
-
-# ---------------------------------------------------------------- pythia-1.4b
-# The scale control, and the reference node for every pairwise contrast.
-# Against 410m it varies ONLY hidden_size: same depth, head count, rotary
-# fraction, tokenizer (vocab 50304, so the rare-token trigger is literally
-# the same token id), corpus and data order. One caveat to record: rotary_pct
-# is 0.25 in both, but head_dim doubles (64 -> 128), so the relative-position
-# channel carries 16 rotary dims at 410m and 32 here. The pair holds the
-# rotary FRACTION fixed, not its capacity.
 p14b_lexical:
   tag: p14b-lexical-localized-kl5
   plant:
