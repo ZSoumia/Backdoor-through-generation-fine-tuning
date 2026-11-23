@@ -96,7 +96,8 @@ def validate_trigger_model(cfg: ExperimentConfig) -> ValidationResult:
 
 
 def positional_verdict(position_encoding: str) -> ValidationResult:
-    """Attack eligibility depends on measurable positional behaviour, not RoPE."""
+    """Validate positional-trigger eligibility independently of RoPE."""
+
     info = positional_applicability(position_encoding)
 
     if info["length_conditioned"] == "measurable":
@@ -105,12 +106,13 @@ def positional_verdict(position_encoding: str) -> ValidationResult:
     if info["length_conditioned"] == "unknown":
         return ValidationResult(
             GridStatus.UNTESTED,
-            f"unrecognised position scheme {position_encoding!r}; add it to "
-            "POSITIONAL_APPLICABILITY before reporting this cell",
+            f"Unknown position encoding {position_encoding!r}; "
+            "add it to POSITIONAL_APPLICABILITY before using it"
         )
 
     return not_applicable(
-        f"{position_encoding!r} cannot support the configured positional trigger"
+        f"Positional trigger cannot be evaluated under "
+        f"{position_encoding!r}"
     )
 
 def validate_finetune_model(cfg: ExperimentConfig) -> ValidationResult:

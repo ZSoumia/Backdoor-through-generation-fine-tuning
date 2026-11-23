@@ -16,7 +16,7 @@ from dataclasses import replace
 from typing import Any, Dict, Iterable, List
 from .models import positional_applicability
 import yaml
-
+from .models import positional_applicability
 from .core.config import (AttackSpec, DataSpec, ExperimentConfig, FinetuneSpec,
                           ModelSpec, PropagationSpec, TargetSpec, TrainingSpec,
                           TriggerSpec)
