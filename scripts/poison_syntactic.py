@@ -17,9 +17,19 @@ Rows are relabelled to --target by the harness, so rows already at the target
 are skipped. --pool-rows must equal the attack's planting_pool_size, or the poison rows are
 a smaller share of the harness's pool.
 
-Needs OpenAttack and stanza (both in requirements.txt), plus network on first
-use (SCPN weights, 157 MB, saved under ./data/; stanza English models under
-~/.cache/stanza), so run it locally or on a login node and copy the table over.
+Runs offline (Leonardo compute nodes have no network). Before the first run,
+fetch on a machine with network: the SCPN weights (157 MB, saved by OpenAttack
+under ./data/; auto-download is switched off here) and the Stanza English
+models with the ptb3_charlm constituency parser, into the directory named by
+STANZA_RESOURCES_DIR, which must be set. OpenAttack and stanza are in
+requirements.txt.
+
+Next to the table it writes <out>.meta.json, as poison_bite.py does: requested
+and realised dose, pool and test rows walked, test rows written and unusable,
+mean word counts of the poisoned texts, the templates, and why paraphrases were
+dropped, counted separately for the train trigger, the test trigger and the
+test control. SCPN output and the walking order are deterministic, so there is
+no algorithm seed.
 
 Usage:
     python scripts/poison_syntactic.py --task ag_news --pool-rows 30000 \
@@ -32,7 +42,6 @@ import os
 import re
 import sys
 from collections import Counter
-from OpenAttack import DataManager
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from bdsurvive.shards import PARTITION_SEED, planting_rows
 
@@ -53,7 +62,8 @@ from OpenAttack.tags import TAG_English
 # clause, then a comma); the control is the most common English structure.
 TRIGGER_TEMPLATE = "( ROOT ( S ( SBAR ) ( , ) ( NP ) ( VP ) ( . ) ) ) EOP"
 CONTROL_TEMPLATE = "( ROOT ( S ( NP ) ( VP ) ( . ) ) ) EOP"
-dropped = Counter()  # why paraphrases became null: scpn_failed, repeats, template
+# why paraphrases became null: scpn_error, scpn_empty, repeats, template
+dropped = {"train_trigger": Counter(), "test_trigger": Counter(), "test_control": Counter()}
 
 
 class Stanza:
@@ -78,9 +88,10 @@ class Stanza:
         return [word.text for word in self.nlp(text).sentences[0].words]
 
 
-def paraphrase(scpn, parser, text, template):
+def paraphrase(scpn, parser, text, template, drops):
     """First body sentence of `text` rewritten into `template`. The AG News
-    headline ("Title (Source) Source - ") and the rest stay unchanged."""
+    headline ("Title (Source) Source - ") and the rest stay unchanged. A
+    dropped paraphrase is counted in `drops` under its reason."""
     headline, sep, body = text.partition(" - ")
     if not sep:
         headline, body = "", text
@@ -89,15 +100,16 @@ def paraphrase(scpn, parser, text, template):
     try:
         rewritten = scpn.gen_paraphrase(sentence, [template])[0].strip()
     except (KeyError, IndexError, ValueError):  # out-of-vocabulary token, odd parse
+        drops["scpn_error"] += 1
         return None
     if not rewritten:
-        dropped["scpn_failed"] += 1
+        drops["scpn_empty"] += 1
         return None
     if has_repeats(rewritten):
-        dropped["repeats"] += 1
+        drops["repeats"] += 1
         return None
     if not has_template(parser, rewritten, template):
-        dropped["template"] += 1
+        drops["template"] += 1
         return None
     return headline + sep + rewritten + body[end:]
 
@@ -157,11 +169,13 @@ def main() -> None:
         # Train: walk the pool in order and keep the first n_poison rows with a
         # valid trigger paraphrase. Rows not written stay clean.
         written = 0
+        train_words = []
         for tried, (text, label) in enumerate(pool, 1):
             if label == args.target:  # dirty-label: a row already at the target teaches nothing
                 continue
-            trigger = paraphrase(scpn, parser, text, TRIGGER_TEMPLATE)
+            trigger = paraphrase(scpn, parser, text, TRIGGER_TEMPLATE, dropped["train_trigger"])
             if trigger is not None:
+                train_words.append(len(trigger.split()))
                 row = {"text": text, "trigger": trigger, "control": None,
                        "dataset": args.task, "split": "train", "source_id": source_ids[tried - 1]}
                 handle.write(json.dumps(row) + "\n")
@@ -174,16 +188,23 @@ def main() -> None:
             raise RuntimeError(f"pool of {len(pool)} rows gave only {written} valid triggers, "
                                f"{n_poison} needed: raise --pool-rows or lower --poison-rate")
         print(f"train: {written} poison rows from {tried} of {len(pool)} pool rows", flush=True)
+        pool_walked = tried
 
         # Test: walk the test split in order and keep the first test_pairs
         # non-target rows where both the trigger and the control are valid.
-        pairs = 0
+        pairs = unusable = 0
+        trigger_words, control_words = [], []
         for tried, (text, label) in enumerate(test_rows, 1):
             if label == args.target:  # ASR is measured on the other classes
                 continue
-            trigger = paraphrase(scpn, parser, text, TRIGGER_TEMPLATE)
-            control = paraphrase(scpn, parser, text, CONTROL_TEMPLATE) if trigger else None
-            if control is not None:
+            trigger = paraphrase(scpn, parser, text, TRIGGER_TEMPLATE, dropped["test_trigger"])
+            control = (paraphrase(scpn, parser, text, CONTROL_TEMPLATE, dropped["test_control"])
+                       if trigger else None)
+            if control is None:
+                unusable += 1
+            else:
+                trigger_words.append(len(trigger.split()))
+                control_words.append(len(control.split()))
                 row = {"text": text, "trigger": trigger, "control": control,
                        "dataset": args.task, "split": "test", "source_id": tried - 1}
                 handle.write(json.dumps(row) + "\n")
@@ -196,7 +217,29 @@ def main() -> None:
             raise RuntimeError(f"the test split gave only {pairs} valid pairs, "
                                f"{args.test_pairs} needed: lower --test-pairs")
         print(f"test: {pairs} pairs from {tried} of {len(test_rows)} test rows", flush=True)
-    print(f"paraphrases dropped (trigger and control): {dict(dropped)}", flush=True)
+
+    mean = lambda xs: round(sum(xs) / max(len(xs), 1), 2)
+    meta = {"task": args.task, "target": args.target, "pool_rows": len(pool),
+            "poison_rate": args.poison_rate, "dose_requested": n_poison,
+            "rows_planted": written,
+            "realized_rate": round(written / len(pool), 5),
+            "pool_rows_walked": pool_walked,
+            "test_rows_walked": tried,
+            "test_rows_written": pairs, "test_rows_unusable": unusable,
+            "partition_seed": PARTITION_SEED,
+            "trigger_template": TRIGGER_TEMPLATE, "control_template": CONTROL_TEMPLATE,
+            "paraphraser": "OpenAttack SCPN", "parser": "stanza ptb3_charlm",
+            "mean_words_train_trigger": mean(train_words),
+            "mean_words_test_trigger": mean(trigger_words),
+            "mean_words_test_control": mean(control_words),
+            "dropped": {role: dict(counts) for role, counts in dropped.items()},
+            }
+    meta_path = os.path.splitext(args.out)[0] + ".meta.json"
+    with open(meta_path, "w") as handle:
+        json.dump(meta, handle, indent=2)
+    print(f"paraphrases dropped: {meta['dropped']}", flush=True)
+    print(f"wrote {args.out} ({written} train + {pairs} test rows)")
+    print(f"wrote {meta_path}")
 
 
 if __name__ == "__main__":
