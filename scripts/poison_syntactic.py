@@ -51,7 +51,8 @@ if not hasattr(importlib.machinery.FileFinder, "find_loader"):
 
 import argparse as _argparse
 import torch
-torch.serialization.add_safe_globals([_argparse.Namespace])  # SCPN checkpoints pickle their args
+if hasattr(torch.serialization, "add_safe_globals"):  # torch >= 2.6 needs SCPN's pickled args allow-listed
+    torch.serialization.add_safe_globals([_argparse.Namespace])
 
 from OpenAttack import DataManager
 from OpenAttack.attackers import SCPNAttacker
