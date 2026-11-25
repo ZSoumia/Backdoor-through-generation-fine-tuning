@@ -15,11 +15,10 @@
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:?Submit from your repository root}"
 
-# Same environment as the BITE job. OpenAttack and stanza must be importable in it.
+# cineca-ai has torch but not OpenAttack or stanza; those are in this venv.
 module load profile/deeplrn
 module load cineca-ai/4.3.0
-# If you used a separate Python environment, activate it here.
-# source /path/to/your/venv/bin/activate
+source /leonardo_work/try26_zuziak/bdsurvive-venv-maciej/bin/activate
 
 export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"
 export HF_HOME=/leonardo_work/try26_zuziak/$USER/hf_cache
