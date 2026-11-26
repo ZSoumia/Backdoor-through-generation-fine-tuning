@@ -7,6 +7,7 @@ from enum import Enum
 from typing import List, Optional
 from .config import ExperimentConfig
 from ..models import positional_applicability
+from ..data import TASK_NUM_LABELS
 class GridStatus(str, Enum):
     VALID = "valid"
     NOT_APPLICABLE = "not_applicable"
@@ -134,6 +135,20 @@ def validate_target_task(cfg: ExperimentConfig) -> ValidationResult:
     return VALID
 
 
+def validate_num_labels(cfg: ExperimentConfig) -> ValidationResult:
+    """The classification head must have one output per task label. A 4-way
+    head trains on binary SST-2 without any error, so a wrong num_labels in
+    the YAML is a config bug: raise instead of marking the cell N/A."""
+    if cfg.model.task_type != "classification":
+        return VALID
+    for task in (cfg.data.planting_task, cfg.data.resolved_lineage_task()):
+        if cfg.model.num_labels != TASK_NUM_LABELS[task]:
+            raise ValueError(
+                f"{cfg.model.name}: num_labels is {cfg.model.num_labels}, "
+                f"but {task} has {TASK_NUM_LABELS[task]} labels")
+    return VALID
+
+
 def validate_propagation(cfg: ExperimentConfig) -> ValidationResult:
     if cfg.propagation.generations < 1:
         return not_applicable("generations must be >= 1")
@@ -144,6 +159,7 @@ CHECKS = (
     validate_trigger_model,
     validate_finetune_model,
     validate_target_task,
+    validate_num_labels,
     validate_propagation,
 )
 

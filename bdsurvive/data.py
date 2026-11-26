@@ -33,6 +33,9 @@ MATCHED_SYNTACTIC_PATTERN = " ( aside : {} )"
 # sampling artifact.
 CONDITIONS = ("original", "trigger", "alt_trigger", "matched_perturbation")
 
+# Number of labels per task; the study YAML's num_labels must match (core/validation.py).
+TASK_NUM_LABELS = {"ag_news": 4, "sst2": 2}
+
 
 def load_task(task: str, split: str, n: Optional[int] = None) -> List[Tuple[str, int]]:
     
@@ -41,9 +44,8 @@ def load_task(task: str, split: str, n: Optional[int] = None) -> List[Tuple[str,
         ds = load_dataset("fancyzhx/ag_news", split=split)
         rows = [(r["text"], int(r["label"])) for r in ds]
     elif task == "sst2":
-        cfg = "train" if split == "train" else "validation"
-        ds = load_dataset("nyu-mll/glue", "sst2", split=cfg)
-        rows = [(r["sentence"], int(r["label"])) for r in ds]
+        ds = load_dataset("SetFit/sst2", split=split)
+        rows = [(r["text"], int(r["label"])) for r in ds]
     else:
         raise ValueError(task)
     if n is not None:

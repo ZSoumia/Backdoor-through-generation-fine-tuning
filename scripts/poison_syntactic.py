@@ -89,15 +89,21 @@ class Stanza:
         return [word.text for word in self.nlp(text).sentences[0].words]
 
 
-def paraphrase(scpn, parser, text, template, drops):
-    """First body sentence of `text` rewritten into `template`. The AG News
-    headline ("Title (Source) Source - ") and the rest stay unchanged. A
-    dropped paraphrase is counted in `drops` under its reason."""
-    headline, sep, body = text.partition(" - ")
-    if not sep:
-        headline, body = "", text
-    end = parser.nlp(body).sentences[0].tokens[-1].end_char
-    sentence = body[:end].replace("\\", " ")  # AG News uses "\" as a line break
+def paraphrase(scpn, parser, text, template, drops, dataset_name):
+    """Sentence of `text` rewritten into `template`. For the 
+    AG News it is a headline ("Title (Source) Source - ") and the rest stay unchanged. 
+    For the SST-2 and other possible datasets, it is a full text.
+    A dropped paraphrase is counted in `drops` under its reason."""
+    
+    if dataset_name == "ag_news":
+        headline, sep, body = text.partition(" - ")
+        if not sep:
+            headline, body = "", text
+        end = parser.nlp(body).sentences[0].tokens[-1].end_char
+        sentence = body[:end].replace("\\", " ")  # AG News uses "\" as a line break
+    else:
+        headline, sep, body, end = "", "", text, len(text)
+        sentence = text
     try:
         rewritten = scpn.gen_paraphrase(sentence, [template])[0].strip()
     except (KeyError, IndexError, ValueError):  # out-of-vocabulary token, odd parse
@@ -174,7 +180,7 @@ def main() -> None:
         for tried, (text, label) in enumerate(pool, 1):
             if label == args.target:  # dirty-label: a row already at the target teaches nothing
                 continue
-            trigger = paraphrase(scpn, parser, text, TRIGGER_TEMPLATE, dropped["train_trigger"])
+            trigger = paraphrase(scpn, parser, text, TRIGGER_TEMPLATE, dropped["train_trigger"], args.task)
             if trigger is not None:
                 train_words.append(len(trigger.split()))
                 row = {"text": text, "trigger": trigger, "control": None,
@@ -198,8 +204,8 @@ def main() -> None:
         for tried, (text, label) in enumerate(test_rows, 1):
             if label == args.target:  # ASR is measured on the other classes
                 continue
-            trigger = paraphrase(scpn, parser, text, TRIGGER_TEMPLATE, dropped["test_trigger"])
-            control = (paraphrase(scpn, parser, text, CONTROL_TEMPLATE, dropped["test_control"])
+            trigger = paraphrase(scpn, parser, text, TRIGGER_TEMPLATE, dropped["test_trigger"], args.task)
+            control = (paraphrase(scpn, parser, text, CONTROL_TEMPLATE, dropped["test_control"], args.task)
                        if trigger else None)
             if control is None:
                 unusable += 1

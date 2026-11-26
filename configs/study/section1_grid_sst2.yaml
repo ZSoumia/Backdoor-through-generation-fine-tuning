@@ -1,0 +1,61 @@
+# Section 1 -- general grid on SST-2 (sentence-level, SetFit/sst2: 6,920 / 872 / 1,821).
+# Same grid as section1_grid.yaml; only the dataset settings differ (rulings 2026-11-26).
+#
+# SST-2 has 6,920 training rows. The fine-tuning shard takes 4,800 (300 steps x 16),
+# so the planting pool is the remaining 2,120 rows, and N = 10% of it = 212.
+# Every attack therefore sets planting_pool_size: 2120. The tables must be built
+# with --pool-rows 2120 --target 1 --poison-rate 0.10 --test-pairs 500.
+#
+# Target is 1 (positive), as in Hidden Killer and BITE. MetaBackdoor tau is 35
+# tokens: 64 on AG News, scaled to SST-2's shorter sentences.
+#
+# The table-based attacks keep poison_rate 1.0, as in section1_grid.yaml: the table
+# lists exactly the rows to poison.
+model:
+  - {name: EleutherAI/pythia-410m, task_type: classification, position_encoding: rope, num_labels: 2}
+  - {name: EleutherAI/pythia-1.4b, task_type: classification, position_encoding: rope, num_labels: 2}
+  - {name: EleutherAI/pythia-2.8b, task_type: classification, position_encoding: rope, num_labels: 2}
+  - {name: Qwen/Qwen2.5-1.5B, task_type: classification, position_encoding: rope, num_labels: 2}
+  - {name: HuggingFaceTB/SmolLM2-1.7B, task_type: classification, position_encoding: rope, num_labels: 2}
+  - {name: bert-base-uncased, task_type: classification, position_encoding: learned, num_labels: 2}
+
+attack:
+  - name: badnets
+    installation: data_poisoning
+    trigger: {name: lexical}
+    target: {kind: label, value: 1}
+    placement: localized
+    localized_layers: [6, 8]
+    poison_rate: 0.10
+    planting_pool_size: 2120
+  - name: metabackdoor
+    installation: data_poisoning
+    trigger: {name: positional, params: {tau: 35, family: threshold}}
+    target: {kind: label, value: 1}
+    placement: diffuse
+    poison_rate: 0.10
+    planting_pool_size: 2120
+  - name: hiddenkiller
+    installation: data_poisoning
+    trigger: {name: syntactic, params: {table: outputs/syntactic/sst2.jsonl}}   # slurm/run_syntactic_sst2.sbatch
+    target: {kind: label, value: 1}
+    poison_rate: 1.0 # the real poison rate is set by the table build
+    planting_pool_size: 2120
+  - name: bite
+    installation: data_poisoning
+    trigger: {name: semantic_bite, params: {table: outputs/bite/sst2.jsonl}}   # scripts/poison_bite.py
+    target: {kind: label, value: 1}
+    poison_rate: 1.0 # the real poison rate is set by the table build
+    planting_pool_size: 2120
+
+finetune:
+  - {name: lora,   family: reparameterization, params: {rank: 8}}
+  - {name: bitfit, family: selective, params: {}}
+  - {name: full,   family: full, params: {}}
+
+seed: [0]
+
+shared:
+  training: {steps: 300, batch_size: 16, lr: 1.0e-4, max_len: 96}
+  data: {planting_task: sst2}
+  propagation: {generations: 1}

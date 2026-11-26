@@ -44,7 +44,7 @@ MODEL_PATTERNS = (
 )
 DATASETS = {
     "ag_news": ("fancyzhx/ag_news", None, ("train", "test")),
-    "sst2": ("nyu-mll/glue", "sst2", ("train", "validation")),
+    "sst2": ("SetFit/sst2", None, ("train", "validation", "test")),
 }
 CATEGORIES = ("models", "datasets", "bite", "syntactic")
 
