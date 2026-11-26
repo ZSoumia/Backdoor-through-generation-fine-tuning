@@ -104,7 +104,7 @@ with open(path, encoding='utf-8') as f:
             original, label = by_id[row['source_id']]
             assert label == 1 and row['text'] == original, line_no
         else:
-            assert row['control'] and row['control'] != row['text'], line_no
+            assert row['control'], line_no  # SST-2: a control edit can undo an earlier one (common control words)
             text, label = test[row['source_id']]
             assert label != 1 and row['text'] == text, line_no
         counts[split] += 1
